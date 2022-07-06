@@ -57,7 +57,7 @@ class encoder_lstm(nn.Module):
 
     ''' Encodes time-series sequence '''
 
-    def __init__(self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, batch_first=True) -> None:
+    def __init__(self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, batch_first=False) -> None:
 
         super(encoder_lstm, self).__init__()
 
@@ -108,7 +108,7 @@ class decoder_lstm(nn.Module):
 
     " Decodes time-series sequence"
 
-    def __init__(self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, ouptut_dim, batch_first = True) -> None:
+    def __init__(self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, ouptut_dim, batch_first = False) -> None:
         super(decoder_lstm, self).__init__()
 
         '''
@@ -264,7 +264,7 @@ class mha_novel(nn.Module):
 
 class mha(nn.Module): 
 
-    def __init__(self, lstm_input_dim, hts_embedd_dim, num_head, batch_first = True) -> None:
+    def __init__(self, lstm_input_dim, hts_embedd_dim, num_head, batch_first = False) -> None:
         super().__init__()
 
         self.lstm_input_dim = lstm_input_dim 
@@ -344,10 +344,10 @@ class proportion_model(nn.Module):
         self.num_attention_layer = num_attention_layer 
        
         self.embedd_layer = hts_embedding(self.num_hts_embedd, self.hts_embedd_dim)
-        self.encoder_lstm = encoder_lstm(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, batch_first=True)
-        self.decoder_lstm = decoder_lstm(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, self.lstm_output_dim , batch_first=True)
+        self.encoder_lstm = encoder_lstm(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, batch_first=False)
+        self.decoder_lstm = decoder_lstm(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, self.lstm_output_dim , batch_first=False)
 
-        self.mha = mha(self.lstm_output_dim, self.mha_embedd_dim, self.num_attention_head, batch_first=True)
+        self.mha = mha(self.lstm_output_dim, self.mha_embedd_dim, self.num_attention_head, batch_first=False)
         self.fc_skip = fc_skip(self.lstm_output_dim,self.lstm_output_dim)
         self.linear = Linear(self.lstm_output_dim,1)
 
@@ -363,14 +363,11 @@ class proportion_model(nn.Module):
         All implementation is based on Batch = False 
         input_tensor: 4D torch tensor of shape b, H, C, input_dim 
         target_tensor: 4D torch tensor of shape b, F, C, 1 
-        b: time-batched input 
-        C: number of the children 
-        H: history data points 
-        F: future data points 
-        lstm_input_dim: 
+            b: time-batched input 
+            C: number of the children 
+            H: history data points 
+            F: future data points 
         """
-
-        print(f'The training batch size is {batch_size}')
 
         losses = np.full(n_epochs, np.nan)
 
@@ -470,6 +467,11 @@ class proportion_model(nn.Module):
 
 if __name__ == "__main__": 
 
+    """
+    Data Processing Script 
+    
+    """
+
     # dimension about the dataset
     no_child = 8
     History = 24 
@@ -563,8 +565,7 @@ if __name__ == "__main__":
             data_3d_time_batched.shape[-1]
         )
         
-        ## We first use the recursive predicitng mechanism in LSTM, in which case we masked all the information in the F zone, as this is not 
-        ## available for us 
+        ## We first use the recursive predicitng mechanism in LSTM, in the future we release more blocks that adapt to teacher-forcing/mixed training 
         target_tensor = torch.empty(
             number_observations, 
             Forward,
