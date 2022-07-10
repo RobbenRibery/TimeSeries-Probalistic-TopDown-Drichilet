@@ -13,6 +13,22 @@ import numpy as np
 import math 
 
 
+def get_loss(ouput, target): 
+
+    """
+    output: ouput from the proportion forecasrting model (L, C, 1)
+    target: target proportions (L, C, 1)
+    
+    """
+    for f in target.shape[0]: 
+
+        # geenrate the Drichilet distribution 
+        predictive_dis = Dirichlet(target[f,:,:])
+        
+
+
+    return None 
+
 class hts_embedding(nn.Module): 
 
     """
@@ -318,8 +334,10 @@ class proportion_model(nn.Module):
         self.embed_dim = embed_dim
         self.num_attention_head = num_attention_head
         self.num_attention_layer = num_attention_layer 
+        self.num_embedd = num_embedd
+        self.embedd_dim = embedd_dim
        
-        self.embedd_layer = hts_embedding(num_embedd, embed_dim)
+        self.embedd_layer = hts_embedding(self.num_embedd, self.embed_dim)
         self.encoder_lstm = encoder_lstm(self.input_dim, self.hidden_dim, self.num_layer, batch_first=True)
         self.decoder_lstm = decoder_lstm(self.input_dim, self.hidden_dim, self.num_layer, self.output_dim , batch_first=True)
         self.mha = mha(self.output_dim, self.embed_dim, self.num_attention_head, batch_first=True)
@@ -369,7 +387,7 @@ class proportion_model(nn.Module):
                 embedd_vector = hts_embedding(hts_embedding_input)
 
                 ### append the embed vector into the model 
-                input_batch = cat((input_batch,embedd_vector) , 0) 
+                input_batch = cat((input_batch, embedd_vector) , 0) 
 
                 ### pass through the encoder & decoder LSTM network
                 ## encoder
