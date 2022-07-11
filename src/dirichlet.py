@@ -69,7 +69,7 @@ class Dirichlet(ExponentialFamily):
     def log_prob(self, value):
         if self._validate_args:
             self._validate_sample(value)
-        return ((torch.log(value) * (self.concentration - 1.0)).sum(-1) +
+        return ((torch.log(value+0.001) * (self.concentration - 1.0)).sum(-1) +
                 torch.lgamma(self.concentration.sum(-1)) -
                 torch.lgamma(self.concentration).sum(-1))
 
@@ -104,3 +104,60 @@ class Dirichlet(ExponentialFamily):
 
     def _log_normalizer(self, x):
         return x.lgamma().sum(-1) - torch.lgamma(x.sum(-1))
+
+
+if __name__ == "__main__": 
+
+    # F = 2 
+    # C = 3
+    concentration = torch.tensor(
+        [
+            [0.1, 0.2, 0.7],
+            [0.4, 0.5 ,0.1]
+        ]
+    )
+
+    #print(concentration.shape)
+
+    predictive_dist = Dirichlet(concentration)
+
+    value = torch.tensor(
+        [
+            [0.15, 0.15, 0.7],
+            [0.4, 0.5 ,0.1]
+        ]
+    )
+
+    #print(predictive_dist.log_prob(value))
+
+
+    def get_loss(output, target): 
+
+        drichilet = Dirichlet(output) 
+
+        print(f"the batch shape is {output.shape[:-1]}")
+        print(f"the event shape is {output.shape[-1:]}")
+        print(drichilet)
+
+        loss = drichilet.log_prob(target)
+        loss_sum = loss.sum(-1)
+
+        return -loss_sum
+
+
+    output =  torch.tensor(
+        [
+            [0.1, 0.2, 0.7],
+            [0.3, 0.3, 0.4]
+            
+        ]
+    )
+
+    target = torch.tensor(
+        [
+            [0.1, 0.2, 0.7],
+            [0.8, 0.1, 0.1]
+        ]
+    )
+
+    print(get_loss(output, target))

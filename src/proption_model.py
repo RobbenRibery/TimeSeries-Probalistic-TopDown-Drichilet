@@ -1,4 +1,7 @@
+from ast import For
+from random import paretovariate
 from tkinter import N
+from matplotlib.pyplot import axis
 from torch.nn import (
     LSTM, 
     MultiheadAttention, 
@@ -12,22 +15,18 @@ from dirichlet import *
 import numpy as np 
 import math 
 
+def get_loss(output, target): 
 
-def get_loss(ouput, target): 
+    drichilet = Dirichlet(output) 
 
-    """
-    output: ouput from the proportion forecasrting model (L, C, 1)
-    target: target proportions (L, C, 1)
-    
-    """
-    for f in target.shape[0]: 
+    # print(f"the batch shape is {output.shape[:-1]}")
+    # print(f"the event shape is {output.shape[-1:]}")
+    # print(drichilet)
 
-        # geenrate the Drichilet distribution 
-        predictive_dis = Dirichlet(target[f,:,:])
-        
+    loss = drichilet.log_prob(target)
+    loss_sum = loss.sum(-1)
 
-
-    return None 
+    return -loss_sum
 
 class hts_embedding(nn.Module): 
 
@@ -58,24 +57,24 @@ class encoder_lstm(nn.Module):
 
     ''' Encodes time-series sequence '''
 
-    def __init__(self, input_dim, hidden_dim, num_layer, batch_first=True) -> None:
+    def __init__(self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, batch_first=True) -> None:
 
         super(encoder_lstm, self).__init__()
 
         '''
-        : param input_dim:     the number of features in the input X
-        : param hidden_dim:    the number of features in the hidden state h
-        : param num_layers:     number of recurrent layers (i.e., 2 means there are
+        : param lstm_input_dim:     the number of features in the input X
+        : param lstm_hidden_dim:    the number of features in the hidden state h
+        : param lstm_num_layers:     number of recurrent layers (i.e., 2 means there are
         :                       2 stacked LSTMs)
         : batch_first:          True --> first input would be the number of sequences/observations
         '''
 
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.num_layer = num_layer 
+        self.lstm_input_dim = lstm_input_dim
+        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_num_layer = lstm_num_layer 
         self.batch_first = batch_first 
 
-        self.lstm = LSTM(self.input_dim, self.hidden_dim, self.num_layer, batch_first = self.batch_first ,)
+        self.lstm = LSTM(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, batch_first = self.batch_first ,)
 
     def init_hidden(self, batch_size):
         
@@ -85,13 +84,13 @@ class encoder_lstm(nn.Module):
         : return:              zeroed hidden state and cell state 
         '''
         
-        return (zeros(self.num_layer, batch_size, self.hidden_dim),
-                zeros(self.num_layer, batch_size, self.hidden_dim))
+        return (zeros(self.lstm_num_layer, batch_size, self.lstm_hidden_dim),
+                zeros(self.lstm_num_layer, batch_size, self.lstm_hidden_dim))
 
     def forward(self, x, h0, c0): 
 
         '''
-        : param x :                    input of shape (# in batch, seq_len, input_dim) 
+        : param x :                    input of shape (# in batch, seq_len, lstm_input_dim) 
 
         : return lstm_out,:            lstm_out gives all the hidden states in the sequence;
         
@@ -109,25 +108,25 @@ class decoder_lstm(nn.Module):
 
     " Decodes time-series sequence"
 
-    def __init__(self, input_dim, hidden_dim, num_layer, ouptut_dim, batch_first = True) -> None:
+    def __init__(self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, ouptut_dim, batch_first = True) -> None:
         super(decoder_lstm, self).__init__()
 
         '''
-        : param self.input_dim:     the number of features in the input X
-        : param hidden_dim:    the number of features in the hidden state h
-        : param num_layers:     number of recurrent layers (i.e., 2 means there are
+        : param self.lstm_input_dim:     the number of features in the input X
+        : param lstm_hidden_dim:    the number of features in the hidden state h
+        : param lstm_num_layers:     number of recurrent layers (i.e., 2 means there are
         :                       2 stacked LSTMs)
         : batch_first:          True --> first input would be the number of sequences/observations
         '''
 
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim 
-        self.num_layer = num_layer 
-        self.output_dim = ouptut_dim
+        self.lstm_input_dim = lstm_input_dim
+        self.lstm_hidden_dim = lstm_hidden_dim 
+        self.lstm_num_layer = lstm_num_layer 
+        self.lstm_output_dim = ouptut_dim
         self.batch_first = batch_first 
-        self.lstm = LSTM(self.input_dim, self.hidden_dim, self.num_layer, batch_first= self.batch_first,)
-        self.linear = Linear(self.hidden_dim, self.input_dim) 
-        self.linear_final = Linear(self.hidden_dim, self.output_dim)
+        self.lstm = LSTM(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, batch_first= self.batch_first,)
+        self.linear = Linear(self.lstm_hidden_dim, self.lstm_input_dim) 
+        self.linear_final = Linear(self.lstm_hidden_dim, self.lstm_output_dim)
 
     def forward(self, x, encoder_cache): 
 
@@ -136,8 +135,8 @@ class decoder_lstm(nn.Module):
         x: input at the last timestamp  input of shape should 2D (batch_size, input_size)
     
         encoder_output: cache of the encoder output 
-            hn: (D time num_layers, # nathces, hidden_dim))
-            cn: (D time num_layers, # nathces, hidden_dim))
+            hn: (D time lstm_num_layers, # nathces, lstm_hidden_dim))
+            cn: (D time lstm_num_layers, # nathces, lstm_hidden_dim))
             D = 2 if bi-directional, 1 if unidirectional 
         """
         (hn, cn) = encoder_cache
@@ -168,27 +167,27 @@ class mha_novel(nn.Module):
     
     """
 
-    def __init__(self, input_dim, embed_dim, num_head) -> None:
+    def __init__(self, lstm_input_dim, hts_embedd_dim, num_head) -> None:
         super().__init__()
 
         """
-        embed_dim: the number of feature i
-        input_dim: the number of features in the input x  
+        hts_embedd_dim: the number of feature i
+        lstm_input_dim: the number of features in the input x  
 
         """
-        assert embed_dim % num_head == 0 
-        # embed_dim / num_head = query size 
+        assert hts_embedd_dim % num_head == 0 
+        # hts_embedd_dim / num_head = query size 
         # each head learns part of the embedding dimension to make sure 
         # that specific questions are asked with each head 
 
-        self.embed_dim = embed_dim
+        self.hts_embedd_dim = hts_embedd_dim
         self.num_head = num_head 
-        self.query_size = embed_dim // num_head
+        self.query_size = hts_embedd_dim // num_head
 
         # Stack all weight matrices 1...h together for efficiency
         # Note that in many implementations you see "bias=False" which is optional
-        self.qkv_proj = Linear(input_dim, 3*embed_dim)
-        self.o_proj = Linear(embed_dim, embed_dim)
+        self.qkv_proj = Linear(lstm_input_dim, 3*hts_embedd_dim)
+        self.o_proj = Linear(hts_embedd_dim, hts_embedd_dim)
 
         self._reset_parameters()
 
@@ -203,11 +202,11 @@ class mha_novel(nn.Module):
     def forward(self, x, mask=None, return_attention=False): 
 
         """
-        x: input tensor with (batch size, length of the sequence, embed_dim)
+        x: input tensor with (batch size, length of the sequence, hts_embedd_dim)
         """
 
         # calcualte WQ, WK and WV together and seperate them into three seperate matrics 
-        batch_size, seq_length, embed_dim = x.size() 
+        batch_size, seq_length, hts_embedd_dim = x.size() 
         qkv = self.qkv_proj(x) 
         qkv = qkv.reshape(batch_size, self.num_head, seq_length, 3*self.query_size)
         q, k, v = qkv.chunk(3, dim=-1) 
@@ -245,9 +244,9 @@ class mha_novel(nn.Module):
         value: batch size, seq_length, num_head, query_size
         """
 
-        value = value.reshape(batch_size, seq_length, embed_dim)
+        value = value.reshape(batch_size, seq_length, hts_embedd_dim)
         """
-        value: batch size, seq_length, embed_dim
+        value: batch size, seq_length, hts_embedd_dim
         """
 
         value = self.o_proj(value)
@@ -265,14 +264,14 @@ class mha_novel(nn.Module):
 
 class mha(nn.Module): 
 
-    def __init__(self, input_dim, embed_dim, num_head, batch_first = True) -> None:
+    def __init__(self, lstm_input_dim, hts_embedd_dim, num_head, batch_first = True) -> None:
         super().__init__()
 
-        self.input_dim = input_dim 
-        self.embed_dim = embed_dim 
+        self.lstm_input_dim = lstm_input_dim 
+        self.hts_embedd_dim = hts_embedd_dim 
         self.num_head = num_head 
         self.batch_first = batch_first 
-        self.mha = MultiheadAttention(self.embed_dim, self.num_head, batch_first=self.batch_first)
+        self.mha = MultiheadAttention(self.hts_embedd_dim, self.num_head, batch_first=self.batch_first)
 
     def forward(self, x): 
 
@@ -282,13 +281,13 @@ class mha(nn.Module):
 
 class fc_skip(nn.Module): 
 
-    def __init__(self, input_dim, output_dim, activation=nn.ReLU()) -> None:
+    def __init__(self, lstm_input_dim, lstm_output_dim, activation=nn.ReLU()) -> None:
         super().__init__()
 
-        self.input_dim = input_dim 
-        self.output_dim = output_dim 
+        self.lstm_input_dim = lstm_input_dim 
+        self.lstm_output_dim = lstm_output_dim 
         self.activation = activation
-        self.fc = Linear(input_dim, output_dim)
+        self.fc = Linear(lstm_input_dim, lstm_output_dim)
 
     def forward(self, x):  
 
@@ -300,12 +299,12 @@ class fc_skip(nn.Module):
 
 class linear(nn.Module): 
 
-    def __init__(self, input_dim, output_dim) -> None:
+    def __init__(self, lstm_input_dim, lstm_output_dim) -> None:
         super().__init__()
 
-        self.input_dim = input_dim
-        self.output_dim = output_dim 
-        self.linear = nn.Linear(self.input_dim, self.output_dim)
+        self.lstm_input_dim = lstm_input_dim
+        self.lstm_output_dim = lstm_output_dim 
+        self.linear = nn.Linear(self.lstm_input_dim, self.lstm_output_dim)
 
     def forward(self, x): 
 
@@ -316,33 +315,41 @@ class linear(nn.Module):
 
 class proportion_model(nn.Module): 
 
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim, embed_dim, num_attention_head, num_attention_layer, 
-    num_embedd, embedd_dim) -> None:
+    def __init__(
+        self, 
+        num_hts_embedd, hts_embedd_dim, 
+        lstm_input_dim, lstm_hidden_dim, lstm_num_layer, lstm_output_dim, 
+        mha_embedd_dim, num_attention_head, num_attention_layer, 
+        num_embedd, embedd_dim
+    ) -> None:
         super().__init__()
 
         """
-        input_dim: input dimensiotn of the LSTM encoder 
-        hidden_dim: fixed hidden dimension of the LSTM encoder and decoder 
-        num_layer: number of the layers in the 
+        lstm_input_dim: input dimensiotn of the LSTM encoder 
+        lstm_hidden_dim: fixed hidden dimension of the LSTM encoder and decoder 
+        lstm_num_layer: number of the layers in the 
         
         
         """
-        self.input_dim = input_dim 
-        self.hidden_dim = hidden_dim 
-        self.num_layer = num_layer 
-        self.output_dim = output_dim
-        self.embed_dim = embed_dim
+        self.num_hts_embedd = num_hts_embedd
+        self.hts_embedd_dim = hts_embedd_dim
+
+        self.lstm_input_dim = lstm_input_dim 
+        self.lstm_hidden_dim = lstm_hidden_dim 
+        self.lstm_num_layer = lstm_num_layer 
+        self.lstm_output_dim = lstm_output_dim
+
+        self.mha_embedd_dim =  mha_embedd_dim 
         self.num_attention_head = num_attention_head
         self.num_attention_layer = num_attention_layer 
-        self.num_embedd = num_embedd
-        self.embedd_dim = embedd_dim
        
-        self.embedd_layer = hts_embedding(self.num_embedd, self.embed_dim)
-        self.encoder_lstm = encoder_lstm(self.input_dim, self.hidden_dim, self.num_layer, batch_first=True)
-        self.decoder_lstm = decoder_lstm(self.input_dim, self.hidden_dim, self.num_layer, self.output_dim , batch_first=True)
-        self.mha = mha(self.output_dim, self.embed_dim, self.num_attention_head, batch_first=True)
-        self.fc_skip = fc_skip(self.output_dim,self.output_dim)
-        self.linear = Linear(self.output_dim,1)
+        self.embedd_layer = hts_embedding(self.num_hts_embedd, self.hts_embedd_dim)
+        self.encoder_lstm = encoder_lstm(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, batch_first=True)
+        self.decoder_lstm = decoder_lstm(self.lstm_input_dim, self.lstm_hidden_dim, self.lstm_num_layer, self.lstm_output_dim , batch_first=True)
+
+        self.mha = mha(self.lstm_output_dim, self.mha_embedd_dim, self.num_attention_head, batch_first=True)
+        self.fc_skip = fc_skip(self.lstm_output_dim,self.lstm_output_dim)
+        self.linear = Linear(self.lstm_output_dim,1)
 
     def train(
         self, 
@@ -353,8 +360,14 @@ class proportion_model(nn.Module):
         ): 
 
         """
-        input_tensor: 3D torch tensor of shape b, L, input_dim + time_series_index
-        target_tensor: 3D torch tensor of shape b, L, 1
+        All implementation is based on Batch = False 
+        input_tensor: 4D torch tensor of shape b, H, C, input_dim 
+        target_tensor: 4D torch tensor of shape b, F, C, 1 
+        b: time-batched input 
+        C: number of the children 
+        H: history data points 
+        F: future data points 
+        lstm_input_dim: 
         """
 
         print(f'The training batch size is {batch_size}')
@@ -391,7 +404,7 @@ class proportion_model(nn.Module):
 
                 ### pass through the encoder & decoder LSTM network
                 ## encoder
-                decoder_ouputs = zeros(batch_size, target_len, self.output_dim)
+                decoder_ouputs = zeros(batch_size, target_len, self.lstm_output_dim)
                 # intitialise the LSTM encoder initial cell state and hidden state 
                 h0, c0 = self.encoder_lstm.init_hidden(batch_size) 
                 # zero the gradient
@@ -443,42 +456,167 @@ class proportion_model(nn.Module):
                 print(f"The ouput from the model has shape {batch_output.shape}")
                 #print(f"The ouput from the model is {batch_output}")
 
-                Dirichlet_predictive = Dirichlet(batch_output)
+                loss = get_loss(batch_output, target_batch)
 
+                batch_loss += loss
+
+            batch_loss.backward()
+
+            optimizer.step()
     
-        return None 
+        return 
 
 
 
 if __name__ == "__main__": 
 
+    # dimension about the dataset
     no_child = 8
-    History = 12 
+    History = 24 
     Forward = 12 
-    input_dim = 3
+    covariate_dim = 4 
+
+    lstm_input_dim = 3
     embediing_dim = 12
-    lstm_hidden_dim = 48
+    lstm_lstm_hidden_dim = 48
     lstm_layer_size = 1
     number_attention_head = 4
     number_attention_layer = 1
-    input_dim = 3*History+embediing_dim
-    output_dim = input_dim
+    lstm_input_dim = 3*History+embediing_dim
+    lstm_output_dim = lstm_input_dim
     batch_size = 2
 
-    proportion_model = proportion_model(
-        input_dim, lstm_hidden_dim, lstm_layer_size, output_dim, output_dim, number_attention_head, number_attention_layer,
+
+    time_dimension = (History+Forward) * 3
+    # proportions matrix T * C 
+    proportions = F.softmax(torch.rand(time_dimension, no_child),)
+    print(proportions.shape)
+
+    # parent sales matrix T*1
+    parent  = torch.randint(10,(time_dimension,1))
+    print(parent.shape)
+    
+    # covariates matrix T * covariate_dim 
+    covariate = torch.rand(time_dimension,covariate_dim)
+    print(covariate.shape) 
+
+    # hie_index
+    hie_index = torch.arange(no_child)
+    print(hie_index)
+
+    proportions_3d = proportions.reshape(time_dimension, no_child, 1)
+    print(proportions_3d.shape)
+    print(proportions_3d[0,:,:].sum())
+
+    parent_3d = (parent.unsqueeze(1)).expand(parent.shape[0], no_child, parent.shape[-1])
+    print(parent_3d.shape)
+    
+    data_3d = torch.cat((proportions_3d, parent_3d), dim=-1)
+    print(data_3d.shape)
+    print(data_3d[0,:,:])
+
+    covariate_3d = covariate.unsqueeze(1).expand(covariate.shape[0], no_child, covariate.shape[-1])
+    print(covariate_3d.shape)
+    print(covariate_3d[0,:,:])
+
+    data_3d = torch.cat((data_3d,covariate_3d), dim=-1)
+    print(data_3d.shape)
+    print(data_3d[0,:,:])
+
+    hie_index_2d = hie_index.expand(time_dimension, no_child)
+    hie_index_3d = hie_index_2d.reshape(hie_index_2d.shape[0], hie_index_2d.shape[-1], 1)
+    print(hie_index_3d.shape)
+    print(hie_index_3d[0,:,:])
+
+    data_3d = torch.cat((data_3d,hie_index_3d), dim=-1)
+    print(data_3d.shape)
+    print(data_3d[0,:,:])
+
+    number_observations = data_3d.shape[0] - (History+Forward)+1 
+
+    data_3d_time_batched = torch.empty(
+        number_observations, 
+        History+Forward,
+        data_3d.shape[1],
+        data_3d.shape[2]
     )
 
-    input_tensor = rand(no_child, History,input_dim)
-    target_tensor = rand(no_child, Forward,1)
+    for i in range(number_observations): 
+
+        data_3d_time_batched[i,:,:,:] = data_3d[i:i+History+Forward, :, :] 
+
+
+    print(data_3d_time_batched.shape)
+    print(data_3d_time_batched[-1,:,:,:].shape)
+
     
-    proportion_model.train( 
-        input_tensor, 
-        target_tensor, 
-        1, 
-        Forward, 
-        batch_size, 
-        learning_rate = 0.01,)
+
+    if torch.equal(data_3d_time_batched[-1,-1,:,:], data_3d[-1,:,:]): 
+
+
+        print('data correctly processed to generate time-bacted tensor')
+
+        input_tensor = torch.empty(
+            number_observations, 
+            History,
+            data_3d_time_batched.shape[-2],
+            data_3d_time_batched.shape[-1]
+        )
+        
+        ## We first use the recursive predicitng mechanism in LSTM, in which case we masked all the information in the F zone, as this is not 
+        ## available for us 
+        target_tensor = torch.empty(
+            number_observations, 
+            Forward,
+            data_3d_time_batched.shape[-2],
+            1
+            # data_3d_time_batched.shape[-1]
+        )
+
+        for i in range(data_3d_time_batched.shape[0]): 
+
+            input_tensor[i] = data_3d_time_batched[i,:History,:,:]
+            target_2d = data_3d_time_batched[i,History:,:,0]
+            target_tensor[i] =  target_2d.reshape(target_2d.shape[0], target_2d.shape[1],1)
+
+            # print(input_tensor.shape)
+            # print(target_tensor.shape)
+
+        print(input_tensor.shape)
+        print(target_tensor.shape)
+        # print(target_tensor[-1,0,:,:].sum())
+
+    else: 
+
+        raise "Missed processed data point, not all time points are batched"
+
+
+
+    
+
+
+    # data on aggregate 
+    # data = torch.cat((proportions,parent,covariate),axis=1)
+    # print(data.shape)
+
+    # #reshpe the data into 3-D first 
+    # data_3d = data.view(time_dimension, no_child, data.shape[-1] )
+    # print(data_3d.shape)
+
+    # proportion_model = proportion_model(
+    #     lstm_input_dim, lstm_lstm_hidden_dim, lstm_layer_size, lstm_output_dim, lstm_output_dim, number_attention_head, number_attention_layer,
+    # )
+
+    # input_tensor = rand(History, no_child,lstm_input_dim)
+    # target_tensor = rand(no_child, Forward, 1)
+    
+    # proportion_model.train( 
+    #     input_tensor, 
+    #     target_tensor, 
+    #     1, 
+    #     Forward, 
+    #     batch_size, 
+    #     learning_rate = 0.01,)
 
     
 
