@@ -77,7 +77,7 @@ class Dirichlet(ExponentialFamily):
         if self._validate_args:
             self._validate_sample(value)
         return (
-            (torch.log(value + 0.001) * (self.concentration - 1.0)).sum(-1)
+            (torch.log(value) * (self.concentration - 1.0)).sum(-1)
             + torch.lgamma(self.concentration.sum(-1))
             - torch.lgamma(self.concentration).sum(-1)
         )

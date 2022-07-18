@@ -316,7 +316,7 @@ class proportion_model(nn.Module):
         n_epochs,
         target_len,
         batch_size,
-        learning_rate=0.01,
+        learning_rate=1.2,
     ):
 
         """
@@ -379,11 +379,12 @@ class proportion_model(nn.Module):
                     h0, c0 = self.encoder_lstm.init_hidden(input_batch.shape[-2])
 
                     #### ------------------------ RESET the gradient ------------------- ##############
-                    optimizer.zero_grad()
                     # note: we pass 4 examples into the network and we update the gradient
 
                     # pass in each observation for forward propogation
                     for batch_index in range(input_batch.shape[0]):
+
+                        optimizer.zero_grad()
 
                         decoder_ouputs = zeros(
                             target_len, input_batch.shape[-2], self.lstm_output_dim
@@ -485,14 +486,18 @@ class proportion_model(nn.Module):
                         )
                         target = target.reshape(target.shape[0], target.shape[1])
 
+                        #print(model_output.shape, target.shape)
+                        #print(model_output[0], target[0])
+
                         loss = get_loss(model_output, target)
-                        batch_loss += loss
+                        #print(loss)
 
-                    # backpropagation
-                    batch_loss.backward(retain_graph=True)
-                    optimizer.step()
+                        loss.backward()
+                        optimizer.step()
 
-                batch_loss = (batch_loss.item()) / n_batches
+                        batch_loss = batch_loss + loss.item()
+
+                batch_loss = (batch_loss) / n_batches
                 print(f"The batch loss for iteration {it} is {batch_loss}")
                 losses[it] = batch_loss
 
@@ -509,7 +514,7 @@ if __name__ == "__main__":
     """
 
     # dimension about the dataset
-    no_child = 100
+    no_child = 8
     History = 24
     Forward = 12
     covariate_dim = 4
@@ -656,7 +661,7 @@ if __name__ == "__main__":
 
         ###---------- trainign parameters from the paper ------------ ######
 
-        n_epochs = 10
+        n_epochs = 50
         target_len = Forward
         batch_size = 4
         l_r = 0.00079
