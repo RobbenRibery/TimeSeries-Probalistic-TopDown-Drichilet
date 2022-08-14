@@ -17,7 +17,7 @@ import math
 torch.autograd.set_detect_anomaly(True)
 
 
-def get_loss(output, target):
+def get_loss(output, target, epsilon):
 
     drichilet = Dirichlet(output)
 
@@ -25,7 +25,7 @@ def get_loss(output, target):
     # print(f"the event shape is {output.shape[-1:]}")
     # print(drichilet)
 
-    loss = drichilet.log_prob(target)
+    loss = drichilet.log_prob(target,epsilon)
     loss_sum = loss.sum(-1)
 
     return -loss_sum
@@ -105,7 +105,7 @@ class encoder_lstm(nn.Module):
             torch.randn(1 * self.lstm_num_layer, batch_size, self.lstm_hidden_dim),
         )
 
-    def forward(self, x, h0, c0):
+    def forward(self, x, ):
 
         """
         : param x :                    input of shape (# in batch, seq_len, lstm_input_dim)
@@ -116,7 +116,7 @@ class encoder_lstm(nn.Module):
         :                              element in the sequence
         """
 
-        encoder_ouptut, (self.hn, self.cn) = self.lstm(x, (h0, c0))
+        encoder_ouptut, (self.hn, self.cn) = self.lstm(x,)
         self.cache = (self.hn, self.cn)
 
         return encoder_ouptut, self.cache
@@ -291,21 +291,21 @@ class proportion_model(nn.Module):
             self.lstm_input_dim,
             self.lstm_hidden_dim,
             self.lstm_num_layer,
-            batch_first=False,
+            batch_first=True,
         )
         self.decoder_lstm = decoder_lstm(
             self.lstm_input_dim,
             self.lstm_hidden_dim,
             self.lstm_num_layer,
             self.lstm_output_dim,
-            batch_first=False,
+            batch_first=True,
         )
         self.mha_with_residual = mha_with_residual(
             self.mha_embedd_dim,
             self.num_head,
             self.mha_output_dim,
             activation=nn.ReLU(),
-            batch_first=False,
+            batch_first=True,
         )
         self.linear_output = linear_output(self.mha_output_dim, self.model_ouput_dim)
 
@@ -333,12 +333,14 @@ class proportion_model(nn.Module):
 
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
-        n_batches = int(input_tensor.shape[0] / batch_size)
+        n_batches = 100#int(input_tensor.shape[0] / batch_size)
 
         with trange(n_epochs) as tr:
 
             # iterate epoch
             for it in tr:
+
+                print(f'Iteration: {it}')
 
                 batch_loss = 0.0
                 batch_loss_tf = 0.0
@@ -350,9 +352,13 @@ class proportion_model(nn.Module):
                 # n_batches passed in per epoch,
                 for b in range(n_batches):
 
+                    #print(f'Iteration: {it} - Batch: {b}')
+
+                    no_child = input_tensor.shape[-3]
+
                     ### select the dataset according to the batch size
-                    input_batch = input_tensor[b : b + batch_size, :, :, :]
-                    target_batch = target_tensor[b : b + batch_size, :, :, :]
+                    input_batch = input_tensor[b : b + batch_size]
+                    target_batch = target_tensor[b : b + batch_size]
                     # print(input_batch.shape)
                     # print(target_batch.shape)
 
@@ -360,23 +366,23 @@ class proportion_model(nn.Module):
                     decoder_batch_ouputs = zeros(
                         batch_size,
                         target_len,
-                        input_batch.shape[-2],
+                        no_child,
                         self.lstm_output_dim,
                     )
                     attention_batch_outputs = zeros(
                         batch_size,
                         target_len,
-                        input_batch.shape[-2],
+                        no_child,
                         self.mha_output_dim,
                     )
                     model_batch_outputs = zeros(
                         batch_size,
                         target_len,
-                        input_batch.shape[-2],
+                        no_child,
                         self.model_ouput_dim,
                     )
 
-                    h0, c0 = self.encoder_lstm.init_hidden(input_batch.shape[-2])
+                    # h0, c0 = self.encoder_lstm.init_hidden(no_child)
 
                     #### ------------------------ RESET the gradient ------------------- ##############
                     # note: we pass 4 examples into the network and we update the gradient
@@ -384,10 +390,14 @@ class proportion_model(nn.Module):
                     # pass in each observation for forward propogation
                     for batch_index in range(input_batch.shape[0]):
 
+                        #print(f'Iteration: {it} - Batch: {b} - Batch index {batch_index}')
+
                         optimizer.zero_grad()
 
+
+                        #### ---!!!!  Be careful that the decoder ouputs are not recorded in a batch first fashion  -------
                         decoder_ouputs = zeros(
-                            target_len, input_batch.shape[-2], self.lstm_output_dim
+                            target_len, no_child, self.lstm_output_dim
                         )
 
                         # print(f"Training Batch number: {b} | Example {batch_index}")
@@ -401,36 +411,39 @@ class proportion_model(nn.Module):
                         # print(input.shape)
 
                         ### get the time series embedding encoding
-                        hts_embedding_input = (input[0, :, -1]).long()
-                        # print(hts_embedding_input.shape)
-                        # print(hts_embedding_input)
+                        hts_embedding_input = (input_batch[batch_index, :, 0, -1]).long()
+                        #print(hts_embedding_input.shape)
+                        #print(hts_embedding_input)
                         # print(hts_embedding_input[0,0,:])
 
                         ## ----------- hts embeddings encoding --- input: tensor(hts_index)----------- ##
                         embedd_vector = self.embedd_layer(hts_embedding_input)
+                
+                        """"
+                        There is a potential big issue using this set-up, 
+                        We are alwyas training a much smaller set of the embedding space, the majority of the 
+                        embedding matrix is 0
+                        
+                        """
                         # print(embedd_vector.shape)
-                        embedd_vector = embedd_vector.expand(
-                            input.shape[0],
-                            embedd_vector.shape[0],
-                            embedd_vector.shape[1],
-                        )
+                        embedd_vector = torch.unsqueeze(embedd_vector, axis=1)
+                        embedd_vector = embedd_vector.repeat(1,input.shape[-2],1)
                         # print(embedd_vector.shape)
+
                         input = cat((input, embedd_vector), -1)
-                        # print(f"with ENCODED hierachy, input batch diemsion is {input.shape}")
+                        #print(f"with ENCODED hierachy, input batch diemsion is {input.shape}")
 
                         ## ------------ lstm encoder ---input: L, C, input_dim ---------- ##
                         encoder_ouput, (
                             encoder_hn,
                             encoder_cn,
-                        ) = self.encoder_lstm.forward(input, h0, c0)
+                        ) = self.encoder_lstm.forward(input)
                         encoder_cache = (encoder_hn, encoder_cn)
                         # print(f"The encoder final hidden state shape is {encoder_hn.shape}")
-                        # print(f"The encoder final cell state shape is {encoder_hn.shape}")
+                        # print(f"The encoder final cell state shape is {encoder_cn.shape}")
 
                         ## ------------- lstm ddecoder --------L, C, input_dim ----------- ##
-                        decoder_input = (input[-1, :, :]).view(
-                            1, input.shape[-2], input.shape[-1]
-                        )
+                        decoder_input = torch.unsqueeze((input[:, -1, :]), dim = 1)
                         decoder_cache = encoder_cache
                         # print(f"The decoder input shape is {decoder_input.shape}")
 
@@ -442,8 +455,11 @@ class proportion_model(nn.Module):
                                 decoder_output,
                                 (decoder_hn, decoder_cn),
                             ) = self.decoder_lstm.forward(decoder_input, decoder_cache)
-                            decoder_ouputs[t, :, :] = layer_output
-                            decoder_ouputs[t, :, :] = decoder_ouputs[t, :, :]
+
+                            # print(decoder_output.shape)
+                            # print(layer_output.shape)
+
+                            decoder_ouputs[t, :, :] = torch.squeeze(layer_output, dim = 1)
 
                             decoder_input = decoder_output
                             decoder_cache = (decoder_hn, decoder_cn)
@@ -470,8 +486,8 @@ class proportion_model(nn.Module):
                         attention_batch_outputs[batch_index] = value
                         attention_batch_outputs[batch_index] = attention_batch_outputs[
                             batch_index
-                        ]
-                        # print(f"The value-output from the attention layer has shape {attention_outputs.shape} ")
+                        ].clone()
+                        # print(f"The value-output from the attention layer has shape {value.shape} ")
 
                         ## ------------- linear output (SoftMax) -------- L, C, 1 ----------- ##
                         model_output = self.linear_output(value)  # L, C, 1
@@ -479,17 +495,17 @@ class proportion_model(nn.Module):
                         model_batch_outputs[batch_index] = model_batch_outputs[
                             batch_index
                         ].clone()
+
                         # print(f"The value-ouput from the linear layer has shape {model_output.shape} ")
 
-                        model_output = model_output.reshape(
-                            model_output.shape[0], model_output.shape[1]
-                        )
-                        target = target.reshape(target.shape[0], target.shape[1])
+                        model_output = torch.squeeze(model_output, dim = -1)
+                        target = torch.squeeze(target, dim=-1)
+                        target = torch.permute(target, (1,0))
 
-                        #print(model_output.shape, target.shape)
-                        #print(model_output[0], target[0])
+                        # print(model_output.shape, target.shape)
+                        # print(model_output[0], target[0])
 
-                        loss = get_loss(model_output, target)
+                        loss = get_loss(model_output, target, 0.01)
                         #print(loss)
 
                         loss.backward()
@@ -497,8 +513,9 @@ class proportion_model(nn.Module):
 
                         batch_loss = batch_loss + loss.item()
 
-                batch_loss = (batch_loss) / n_batches
-                print(f"The batch loss for iteration {it} is {batch_loss}")
+                    batch_loss = (batch_loss) / (b+1)
+                    print(f"The batch loss for Iteration: {it} - Batch: {b} is {batch_loss}")
+
                 losses[it] = batch_loss
 
                 tr.set_postfix(loss="{0:.3f}".format(batch_loss))
