@@ -5,7 +5,7 @@ from tkinter import N
 from grpc import Future
 from matplotlib.pyplot import axis
 from torch.nn import LSTM, MultiheadAttention, Linear
-from torch import tensor, rand, zeros, matmul, permute, log, lgamma, cat
+from torch import tensor, rand, zeros, matmul, permute, log, lgamma, cat, empty
 from torch import nn
 from torch import optim
 from tqdm import trange
@@ -29,6 +29,19 @@ def get_loss(output, target, epsilon):
     loss_sum = loss.sum(-1)
 
     return -loss_sum
+
+class batch_norm(nn.Module): 
+
+    def __init__(self, num_features) -> None:
+        super(batch_norm, self).__init__()
+
+        self.num_features = num_features
+        self.batch_norm_layer = nn.BatchNorm1d(self.num_features)
+
+
+    def forward(self, x): 
+
+        return self.batch_norm_layer(x)
 
 
 class hts_embedding(nn.Module):
@@ -239,7 +252,8 @@ class linear_output(nn.Module):
     def forward(self, x):
 
         output = self.linear(x)
-        output = F.softmax(output)
+        print(output)
+        output = torch.exp(output)
 
         return output
 
@@ -286,6 +300,7 @@ class proportion_model(nn.Module):
         self.residual_output_dim = residual_output_dim
         self.model_ouput_dim = model_ouput_dim
 
+        self.batch_norm_layer = batch_norm(self.lstm_input_dim)
         self.embedd_layer = hts_embedding(self.num_hts_embedd, self.hts_embedd_dim)
         self.encoder_lstm = encoder_lstm(
             self.lstm_input_dim,
@@ -396,7 +411,7 @@ class proportion_model(nn.Module):
 
 
                         #### ---!!!!  Be careful that the decoder ouputs are not recorded in a batch first fashion  -------
-                        decoder_ouputs = zeros(
+                        decoder_ouputs = empty(
                             target_len, no_child, self.lstm_output_dim
                         )
 
@@ -432,7 +447,13 @@ class proportion_model(nn.Module):
 
                         input = cat((input, embedd_vector), -1)
                         #print(f"with ENCODED hierachy, input batch diemsion is {input.shape}")
-
+                        # print(input[0,0,:])
+                        # print(input[1,0,:])
+                        # print(input[2,0,:])
+                        input = input.permute(0,2,1)
+                        input = self.batch_norm_layer(input)
+                        input = input.permute(0,2,1)
+                        #print(input.shape)
                         ## ------------ lstm encoder ---input: L, C, input_dim ---------- ##
                         encoder_ouput, (
                             encoder_hn,
@@ -441,7 +462,8 @@ class proportion_model(nn.Module):
                         encoder_cache = (encoder_hn, encoder_cn)
                         # print(f"The encoder final hidden state shape is {encoder_hn.shape}")
                         # print(f"The encoder final cell state shape is {encoder_cn.shape}")
-
+                        print(encoder_hn)
+                        #print(encoder_cn)
                         ## ------------- lstm ddecoder --------L, C, input_dim ----------- ##
                         decoder_input = torch.unsqueeze((input[:, -1, :]), dim = 1)
                         decoder_cache = encoder_cache
@@ -470,7 +492,7 @@ class proportion_model(nn.Module):
                             batch_index
                         ]
                         # print(decoder_batch_ouputs.shape)
-
+                        #print(decoder_ouputs)
                         ## ------------- MHA -------- L, C, lstm_output_dim ----------- ##
                         attention_inputs = decoder_ouputs
                         # print(f'Attention input has shape : {attention_inputs.shape}')
@@ -488,14 +510,15 @@ class proportion_model(nn.Module):
                             batch_index
                         ].clone()
                         # print(f"The value-output from the attention layer has shape {value.shape} ")
-
-                        ## ------------- linear output (SoftMax) -------- L, C, 1 ----------- ##
+                        #print(value)
+                        ## ------------- linear output (Exp) -------- L, C, 1 ----------- ##
                         model_output = self.linear_output(value)  # L, C, 1
                         model_batch_outputs[batch_index] = model_output.clone()
                         model_batch_outputs[batch_index] = model_batch_outputs[
                             batch_index
                         ].clone()
-
+                        #print(model_output, target)
+                        #print()
                         # print(f"The value-ouput from the linear layer has shape {model_output.shape} ")
 
                         model_output = torch.squeeze(model_output, dim = -1)
@@ -504,7 +527,7 @@ class proportion_model(nn.Module):
 
                         # print(model_output.shape, target.shape)
                         # print(model_output[0], target[0])
-
+                        #print(model_output, target)
                         loss = get_loss(model_output, target, 0.01)
                         #print(loss)
 
