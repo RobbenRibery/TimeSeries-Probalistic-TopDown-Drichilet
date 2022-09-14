@@ -16,6 +16,18 @@ import torch
 writer = SummaryWriter()
 torch.autograd.set_detect_anomaly(True)
 
+class Dirichlet_exp(object):
+    def __init__(self, alpha):
+        from math import gamma
+        from operator import mul
+        self._alpha = np.array(alpha)
+        self._coef = gamma(np.sum(self._alpha)) / \
+                           np.multiply.reduce([gamma(a) for a in self._alpha])
+    def pdf(self, x):
+        '''Returns pdf value for `x`.'''
+        from operator import mul
+        return self._coef * np.multiply.reduce([xx ** (aa - 1)
+                                               for (xx, aa)in zip(x, self._alpha)])
 
 def get_loss(output, target, epsilon):
 
@@ -419,6 +431,8 @@ def train_model(
         iter_losses = []
         for it in tr:
             batch_losses = []
+            batch_pdf = []
+            plt.figure()
             #print(f'Iteration: {it}')
             # pass n_batches for every epoach, update the gradient when we exit the loop 
             for b in range(n_batches):
@@ -465,12 +479,17 @@ def train_model(
 
                     loss = get_loss(output, target, 0.001)
 
+                    #print(torch.exp(-loss))
+
                     #print(output[0])
                     #print(target[0])
-                    funky_loss = torch.norm(output[0]-target[0])
-                    print(funky_loss)
+                    mini_drichilet = Dirichlet(output[0])
+                    mini_pdf = mini_drichilet.log_prob(target[0],0.000001)
+                    # funky_loss = torch.norm(output[0]-target[0])
+                    #batch_pdf.append(mini_pdf)
+                    #print(torch.exp(mini_pdf))
+                    batch_pdf.append(np.exp(mini_pdf.detach().numpy()))
                 
-
                     # reduction method defulat to sum, instead of mean 
                     batch_loss += loss
                     batch_loss_no_grad += loss.item()
@@ -488,10 +507,15 @@ def train_model(
                 
                 # plt.xlabel(f'The number of batches for iteration {it}')
                 # plt.ylabel('Training loss')
+                plt.plot(
+                    list(range(len(batch_pdf))),
+                    batch_pdf
+                )
+                #plt.show()
 
-                # if b%20 == 0 and b!= 0: 
-                #     print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
-                #     plt.show()
+                if b%20 == 0 and b!= 0: 
+                #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
+                    plt.show()
                 #print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
 
             #print(f"Training for iteration {it} is completed")
