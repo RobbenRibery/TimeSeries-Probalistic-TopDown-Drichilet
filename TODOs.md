@@ -1,7 +1,7 @@
 14th Aug 2022
 
 TODOS
-
+- build the validation tensorboard 
 - simplify the model forward prop code 
 - test & validate the training process with the mini-batch GDS
 - inject the L2 regularsation for the embedding space   
