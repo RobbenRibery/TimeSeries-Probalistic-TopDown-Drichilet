@@ -1,3 +1,4 @@
+from tabnanny import check
 from matplotlib.pyplot import axis
 import matplotlib.pyplot as plt
 from nbformat import write
@@ -407,6 +408,7 @@ def train_model(
     target_len, 
     batch_size, 
     learning_rate,
+    PATH = "model.pt" 
     ):
     """
     All implementation is based on Batch = False
@@ -417,25 +419,39 @@ def train_model(
         H: history data points
         F: future data points
     """
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    try: 
+        checkpoint = torch.load(PATH) 
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
+
+        iter_start = checkpoint['epoch']
+        batch_start = checkpoint['batch']
+
+    except FileNotFoundError:
+
+        iter_start = 0 
+        batch_start = 0 
+        pass 
+
+    print(f"Trainign starting from iteration {iter_start}, batch {batch_start}")
 
     number_observations = input_tensor.shape[0]
 
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
     n_batches = number_observations//batch_size + number_observations%batch_size 
 
-    print(f'There are {n_batches} batches during the training process of the model')
-
-    with trange(n_epochs) as tr:
+    with trange(iter_start, n_epochs) as tr:
         plt.figure()
         iter_losses = []
         for it in tr:
+
             batch_losses = []
-            batch_pdf = []
+            batches = []
             plt.figure()
             #print(f'Iteration: {it}')
-            # pass n_batches for every epoach, update the gradient when we exit the loop 
-            for b in range(n_batches):
+            
+            for b in range(batch_start, n_batches):
 
                 #print(f'Iteration: {it} - Batch: {b}')
                 no_child = input_tensor.shape[-3]
@@ -477,18 +493,14 @@ def train_model(
                     #print(output)
                     #print(target)
 
-                    loss = get_loss(output, target, 0.001)
-
+                    loss = get_loss(output, target, 0.000001)
                     #print(torch.exp(-loss))
 
                     #print(output[0])
                     #print(target[0])
-                    mini_drichilet = Dirichlet(output[0])
-                    mini_pdf = mini_drichilet.log_prob(target[0],0.000001)
-                    # funky_loss = torch.norm(output[0]-target[0])
-                    #batch_pdf.append(mini_pdf)
-                    #print(torch.exp(mini_pdf))
-                    batch_pdf.append(np.exp(mini_pdf.detach().numpy()))
+                    #mini_drichilet = Dirichlet(output[0])
+                    #mini_pdf = mini_drichilet.log_prob(target[0],0.000001)
+                    #batch_pdf.append(np.exp(mini_pdf.detach().numpy()))
                 
                     # reduction method defulat to sum, instead of mean 
                     batch_loss += loss
@@ -499,23 +511,33 @@ def train_model(
                 optimizer.step()
                 
                 batch_losses.append(batch_loss_no_grad/batch_size)
-
+                batches.append(b)
                 # plt.plot(
                 #     list(range(b+1)),
                 #     batch_losses
                 # )
-                
                 # plt.xlabel(f'The number of batches for iteration {it}')
                 # plt.ylabel('Training loss')
                 plt.plot(
-                    list(range(len(batch_pdf))),
-                    batch_pdf
+                    batches,
+                    batch_losses
                 )
-                #plt.show()
+                plt.xlabel(f'The number of batches for iteration {it}')
+                plt.ylabel('Training loss')
 
                 if b%20 == 0 and b!= 0: 
                 #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
                     plt.show()
+                    torch.save(
+                        {
+                            'epoch': it,
+                            'batch': b,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'loss': batch_losses,
+                        }, 
+                        PATH
+                    )
                 #print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
 
             #print(f"Training for iteration {it} is completed")
@@ -524,6 +546,7 @@ def train_model(
             tr.set_postfix(loss="{0:.3f}".format(iter_loss))
 
         iter_losses.append(iter_loss)
+        plt.figure()
         plt.plot(
                 list(range(it+1)),
                 iter_losses
