@@ -239,9 +239,12 @@ class mha_with_residual(nn.Module):
         self.mha_output_dim = mha_output_dim
         self.activation = activation
         self.mha = MultiheadAttention(
-            self.mha_embedd_dim, self.num_head, batch_first=self.batch_first
+            self.mha_embedd_dim, 
+            self.num_head, 
+            batch_first=self.batch_first
         )
         self.linear = Linear(self.mha_output_dim, self.mha_output_dim)
+        self.batch_norm_layer = nn.BatchNorm1d(self.mha_embedd_dim)
 
     def forward(self, x):
 
@@ -249,11 +252,13 @@ class mha_with_residual(nn.Module):
         values = self.linear(values)
         values = values + x
         values = self.activation(values)
+        values = self.batch_norm_layer(values.permute(0,2,1))
+        values = values.permute(0,2,1) 
 
         return values, atten_wieghts
 
 
-class linear_output(nn.Module):
+class output(nn.Module):
     def __init__(self, mha_output_dim, model_output_dim) -> None:
         super().__init__()
 
@@ -264,8 +269,8 @@ class linear_output(nn.Module):
     def forward(self, x):
 
         output = self.linear(x)
-        #print(output)
         output = torch.exp(output)
+        output = torch.clamp(output, max=50)
 
         return output
 
@@ -334,7 +339,7 @@ class proportion_model(nn.Module):
             activation=nn.ReLU(),
             batch_first=True,
         )
-        self.linear_output = linear_output(self.mha_output_dim, self.model_ouput_dim)
+        self.output = output(self.mha_output_dim, self.model_ouput_dim)
 
 
     def forward(
@@ -390,13 +395,16 @@ class proportion_model(nn.Module):
             decoder_cache = (decoder_hn, decoder_cn)
 
         # forward prop - multi-headed attention 
+        # decoder outputs (F, C, dim)
         attention_inputs = decoder_ouputs
         for i in range(self.num_attention_layer):
             value, attention_weights = self.mha_with_residual.forward(attention_inputs)
             attention_inputs = value 
 
+            ##### -------- adding the batch norm to make sure the gradient is under control ------ #### 
+
         # forward prop - linear output 
-        output = self.linear_output(value)  # L, C, 1
+        output = self.output(value)  # L, C, 1
 
         return output, decoder_ouputs, value 
 
@@ -423,11 +431,18 @@ def train_model(
 
     try: 
         checkpoint = torch.load(PATH) 
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
 
-        iter_start = checkpoint['epoch']
-        batch_start = checkpoint['batch']
+        if learning_rate == checkpoint['lr']: 
+
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
+
+            iter_start = checkpoint['epoch']
+            batch_start = checkpoint['batch']
+
+        else: 
+            iter_start = 0 
+            batch_start = 0 
 
     except FileNotFoundError:
 
@@ -440,6 +455,7 @@ def train_model(
     number_observations = input_tensor.shape[0]
 
     n_batches = number_observations//batch_size + number_observations%batch_size 
+    print(f"There are {n_batches} batches per iteration")
 
     with trange(iter_start, n_epochs) as tr:
         plt.figure()
@@ -506,18 +522,19 @@ def train_model(
                     batch_loss += loss
                     batch_loss_no_grad += loss.item()
 
+                    if loss.item() >= 10: 
+
+                        print(target)
+                        print(output)
+
                 "---- BackProp ----"
                 (batch_loss/batch_size).backward()
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.8, norm_type=2)
                 optimizer.step()
                 
                 batch_losses.append(batch_loss_no_grad/batch_size)
                 batches.append(b)
-                # plt.plot(
-                #     list(range(b+1)),
-                #     batch_losses
-                # )
-                # plt.xlabel(f'The number of batches for iteration {it}')
-                # plt.ylabel('Training loss')
+
                 plt.plot(
                     batches,
                     batch_losses
@@ -529,7 +546,7 @@ def train_model(
                 #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
                     plt.show()
                     torch.save(
-                        {
+                        {   'lr' : learning_rate,
                             'epoch': it,
                             'batch': b,
                             'model_state_dict': model.state_dict(),
@@ -546,12 +563,5 @@ def train_model(
             tr.set_postfix(loss="{0:.3f}".format(iter_loss))
 
         iter_losses.append(iter_loss)
-        plt.figure()
-        plt.plot(
-                list(range(it+1)),
-                iter_losses
-        )
-        plt.show()
-        
-
-    return model
+    
+    return model, iter_losses
