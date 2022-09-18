@@ -73,11 +73,11 @@ class Dirichlet(ExponentialFamily):
         concentration = self.concentration.expand(shape)
         return _Dirichlet.apply(concentration)
 
-    def log_prob(self, value):
+    def log_prob(self, value, epsilon):
         if self._validate_args:
             self._validate_sample(value)
         return (
-            (torch.log(value) * (self.concentration - 1.0)).sum(-1)
+            (torch.log(value+epsilon) * (self.concentration - 1.0)).sum(-1)
             + torch.lgamma(self.concentration.sum(-1))
             - torch.lgamma(self.concentration).sum(-1)
         )
@@ -143,15 +143,19 @@ if __name__ == "__main__":
 
         print(f"the output shape is {output.shape}")
         print(f"the target shape is {target.shape}")
+        print(output)
+        print(target)
         # print(drichilet)
 
         loss = drichilet.log_prob(target)
+        print(loss)
+        print(loss.shape)
         loss_sum = loss.sum(-1)
 
         return -loss_sum
 
-    output = torch.tensor([[0.1, 0.2, 0.7], [0.3, 0.3, 0.4]])
+    output = torch.tensor([[0.1, 0.2, 0.7]])
 
-    target = torch.tensor([[0.1, 0.2, 0.7], [0.8, 0.1, 0.1]])
+    target = torch.tensor([[0.1, 0.2, 0.7]])
 
     print(get_loss(output, target))

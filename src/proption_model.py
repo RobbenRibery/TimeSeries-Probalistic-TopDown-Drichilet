@@ -1,34 +1,59 @@
-from ast import For
-from asyncio import FastChildWatcher
-from random import paretovariate
-from tkinter import N
-from grpc import Future
+from tabnanny import check
 from matplotlib.pyplot import axis
+import matplotlib.pyplot as plt
+from nbformat import write
+from torch.utils.tensorboard import SummaryWriter 
 from torch.nn import LSTM, MultiheadAttention, Linear
-from torch import tensor, rand, zeros, matmul, permute, log, lgamma, cat
+from torch import tensor, rand, zeros, matmul, permute, log, lgamma, cat, empty
 from torch import nn
 from torch import optim
 from tqdm import trange
 import torch.nn.functional as F
-from dirichlet import *
+from dirichlet import * 
 import numpy as np
-import math
+import torch
 
+
+writer = SummaryWriter()
 torch.autograd.set_detect_anomaly(True)
 
+class Dirichlet_exp(object):
+    def __init__(self, alpha):
+        from math import gamma
+        from operator import mul
+        self._alpha = np.array(alpha)
+        self._coef = gamma(np.sum(self._alpha)) / \
+                           np.multiply.reduce([gamma(a) for a in self._alpha])
+    def pdf(self, x):
+        '''Returns pdf value for `x`.'''
+        from operator import mul
+        return self._coef * np.multiply.reduce([xx ** (aa - 1)
+                                               for (xx, aa)in zip(x, self._alpha)])
 
-def get_loss(output, target):
+def get_loss(output, target, epsilon):
 
-    drichilet = Dirichlet(output)
-
+    drichilet = Dirichlet(concentration=output)
+    # output 
     # print(f"the batch shape is {output.shape[:-1]}")
     # print(f"the event shape is {output.shape[-1:]}")
     # print(drichilet)
 
-    loss = drichilet.log_prob(target)
+    loss = drichilet.log_prob(target, epsilon)
     loss_sum = loss.sum(-1)
 
     return -loss_sum
+
+class batch_norm(nn.Module): 
+
+    def __init__(self, num_features) -> None:
+        super(batch_norm, self).__init__()
+
+        self.num_features = num_features
+        self.batch_norm_layer = nn.BatchNorm1d(self.num_features)
+
+    def forward(self, x): 
+
+        return self.batch_norm_layer(x)
 
 
 class hts_embedding(nn.Module):
@@ -105,7 +130,7 @@ class encoder_lstm(nn.Module):
             torch.randn(1 * self.lstm_num_layer, batch_size, self.lstm_hidden_dim),
         )
 
-    def forward(self, x, h0, c0):
+    def forward(self, x, ):
 
         """
         : param x :                    input of shape (# in batch, seq_len, lstm_input_dim)
@@ -116,7 +141,7 @@ class encoder_lstm(nn.Module):
         :                              element in the sequence
         """
 
-        encoder_ouptut, (self.hn, self.cn) = self.lstm(x, (h0, c0))
+        encoder_ouptut, (self.hn, self.cn) = self.lstm(x,)
         self.cache = (self.hn, self.cn)
 
         return encoder_ouptut, self.cache
@@ -214,9 +239,12 @@ class mha_with_residual(nn.Module):
         self.mha_output_dim = mha_output_dim
         self.activation = activation
         self.mha = MultiheadAttention(
-            self.mha_embedd_dim, self.num_head, batch_first=self.batch_first
+            self.mha_embedd_dim, 
+            self.num_head, 
+            batch_first=self.batch_first
         )
         self.linear = Linear(self.mha_output_dim, self.mha_output_dim)
+        self.batch_norm_layer = nn.BatchNorm1d(self.mha_embedd_dim)
 
     def forward(self, x):
 
@@ -224,11 +252,13 @@ class mha_with_residual(nn.Module):
         values = self.linear(values)
         values = values + x
         values = self.activation(values)
+        values = self.batch_norm_layer(values.permute(0,2,1))
+        values = values.permute(0,2,1) 
 
         return values, atten_wieghts
 
 
-class linear_output(nn.Module):
+class output(nn.Module):
     def __init__(self, mha_output_dim, model_output_dim) -> None:
         super().__init__()
 
@@ -239,7 +269,8 @@ class linear_output(nn.Module):
     def forward(self, x):
 
         output = self.linear(x)
-        output = F.softmax(output)
+        output = torch.exp(output)
+        output = torch.clamp(output, max=50)
 
         return output
 
@@ -286,396 +317,251 @@ class proportion_model(nn.Module):
         self.residual_output_dim = residual_output_dim
         self.model_ouput_dim = model_ouput_dim
 
+        self.batch_norm_layer = batch_norm(self.lstm_input_dim)
         self.embedd_layer = hts_embedding(self.num_hts_embedd, self.hts_embedd_dim)
         self.encoder_lstm = encoder_lstm(
             self.lstm_input_dim,
             self.lstm_hidden_dim,
             self.lstm_num_layer,
-            batch_first=False,
+            batch_first=True,
         )
         self.decoder_lstm = decoder_lstm(
             self.lstm_input_dim,
             self.lstm_hidden_dim,
             self.lstm_num_layer,
             self.lstm_output_dim,
-            batch_first=False,
+            batch_first=True,
         )
         self.mha_with_residual = mha_with_residual(
             self.mha_embedd_dim,
             self.num_head,
             self.mha_output_dim,
             activation=nn.ReLU(),
-            batch_first=False,
+            batch_first=True,
         )
-        self.linear_output = linear_output(self.mha_output_dim, self.model_ouput_dim)
+        self.output = output(self.mha_output_dim, self.model_ouput_dim)
 
-    def train(
+
+    def forward(
         self,
-        input_tensor,
-        target_tensor,
-        n_epochs,
         target_len,
-        batch_size,
-        learning_rate=1.2,
+        input :torch.tensor,
+    ): 
+        """
+        implement the forward propogation for each single observation 
+
+        input: (C, H, dim), embedding dim always the last layer 
+        """
+
+        # empty tensor to hold decoder ouputs 
+        decoder_ouputs = empty(
+            target_len, 
+            input.shape[0],
+            self.lstm_output_dim,
+        )
+
+        # split the features
+        embedding_input = (input[:, 0, -1]).long() 
+        feature_input = input[:, :, :-1] 
+
+        # forward prop -- embedding layer 
+        embedd_vector = self.embedd_layer(embedding_input) 
+        embedd_vector = torch.unsqueeze(embedd_vector, axis=1)
+        embedd_vector = embedd_vector.repeat(1,input.shape[-2],1) 
+        
+        # concate feaute and embeddings 
+        input = cat((feature_input , embedd_vector), -1)  
+
+        # forward prop -- batch norm 
+        input = input.permute(0,2,1)
+        input = self.batch_norm_layer(input)
+        input = input.permute(0,2,1) 
+
+        # forward prop - LSTM encoder 
+        encoder_ouput, ( encoder_hn, encoder_cn,) = self.encoder_lstm.forward(input) 
+        encoder_cache = (encoder_hn, encoder_cn) 
+
+        # last timestamp from the input
+        decoder_input = torch.unsqueeze((input[:, -1, :]), dim = 1)
+        decoder_cache = encoder_cache
+
+        # forward prop - LSTM decoder 
+        for t in range(target_len):
+            (layer_output, decoder_output,(decoder_hn, decoder_cn),) = self.decoder_lstm.forward(decoder_input, decoder_cache)
+
+            decoder_ouputs[t, :, :] = torch.squeeze(layer_output, dim = 1)
+
+            decoder_input = decoder_output
+            decoder_cache = (decoder_hn, decoder_cn)
+
+        # forward prop - multi-headed attention 
+        # decoder outputs (F, C, dim)
+        attention_inputs = decoder_ouputs
+        for i in range(self.num_attention_layer):
+            value, attention_weights = self.mha_with_residual.forward(attention_inputs)
+            attention_inputs = value 
+
+            ##### -------- adding the batch norm to make sure the gradient is under control ------ #### 
+
+        # forward prop - linear output 
+        output = self.output(value)  # L, C, 1
+
+        return output, decoder_ouputs, value 
+
+def train_model(
+    model, 
+    input_tensor, 
+    target_tensor, 
+    n_epochs, 
+    target_len, 
+    batch_size, 
+    learning_rate,
+    PATH = "model.pt" 
     ):
+    """
+    All implementation is based on Batch = False
+    input_tensor: 4D torch tensor of shape b, H, C, input_dim
+    target_tensor: 4D torch tensor of shape b, F, C, 1
+        b: time-batched input
+        C: number of the children
+        H: history data points
+        F: future data points
+    """
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-        """
-        All implementation is based on Batch = False
-        input_tensor: 4D torch tensor of shape b, H, C, input_dim
-        target_tensor: 4D torch tensor of shape b, F, C, 1
-            b: time-batched input
-            C: number of the children
-            H: history data points
-            F: future data points
-        """
+    try: 
+        checkpoint = torch.load(PATH) 
 
-        losses = np.full(n_epochs, np.nan)
+        if learning_rate == checkpoint['lr']: 
 
-        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
 
-        n_batches = int(input_tensor.shape[0] / batch_size)
+            iter_start = checkpoint['epoch']
+            batch_start = checkpoint['batch']
 
-        with trange(n_epochs) as tr:
+        else: 
+            iter_start = 0 
+            batch_start = 0 
 
-            # iterate epoch
-            for it in tr:
+    except FileNotFoundError:
+
+        iter_start = 0 
+        batch_start = 0 
+        pass 
+
+    print(f"Trainign starting from iteration {iter_start}, batch {batch_start}")
+
+    number_observations = input_tensor.shape[0]
+
+    n_batches = number_observations//batch_size + number_observations%batch_size 
+    print(f"There are {n_batches} batches per iteration")
+
+    with trange(iter_start, n_epochs) as tr:
+        plt.figure()
+        iter_losses = []
+        for it in tr:
+
+            batch_losses = []
+            batches = []
+            plt.figure()
+            #print(f'Iteration: {it}')
+            
+            for b in range(batch_start, n_batches):
+
+                #print(f'Iteration: {it} - Batch: {b}')
+                no_child = input_tensor.shape[-3]
+
+                ### select the dataset according to the batch size
+                if b + batch_size <= n_batches:
+                    input_batch = input_tensor[b : b + batch_size]
+                    target_batch = target_tensor[b : b + batch_size]
+                else: 
+                    input_batch = input_tensor[b:]
+                    target_batch = target_tensor[b:]
+
+                decoder_batch_ouputs = zeros(input_batch.shape[0], target_len, no_child, model.lstm_output_dim,)
+                attention_batch_outputs = zeros(input_batch.shape[0], target_len, no_child, model.mha_output_dim,)
+                model_batch_outputs = zeros(input_batch.shape[0], target_len, no_child, model.model_ouput_dim,)
 
                 batch_loss = 0.0
-                batch_loss_tf = 0.0
-                batch_loss_no_tf = 0.0
+                batch_loss_no_grad = 0.0
+                "---- ZERO GRAD ----"
+                optimizer.zero_grad()
+                # pass in each observation for forward propogation
+                for batch_index in range(input_batch.shape[0]):
+                
+                    input = input_batch[batch_index, :, :, :]
+                    target = target_batch[batch_index, :, :, :] 
+                    #print(input.shape)
 
-                num_tf = 0
-                num_no_tf = 0
+                    output, decoder_ouputs, value = model.forward(target_len, input)
+                    decoder_batch_ouputs[batch_index] = decoder_ouputs 
+                    attention_batch_outputs[batch_index] = value
+                    model_batch_outputs[batch_index] = output 
 
-                # n_batches passed in per epoch,
-                for b in range(n_batches):
+                    output = torch.squeeze(output, dim=-1)
+                    target = torch.squeeze(target, dim=-1)
+                    # print(output.shape)
+                    # print(target.shape)
+                    target = torch.permute(target, (1,0))
 
-                    ### select the dataset according to the batch size
-                    input_batch = input_tensor[b : b + batch_size, :, :, :]
-                    target_batch = target_tensor[b : b + batch_size, :, :, :]
-                    # print(input_batch.shape)
-                    # print(target_batch.shape)
+                    #print(output)
+                    #print(target)
 
-                    ## initialise the ENCODER network hidden state and cell state
-                    decoder_batch_ouputs = zeros(
-                        batch_size,
-                        target_len,
-                        input_batch.shape[-2],
-                        self.lstm_output_dim,
+                    loss = get_loss(output, target, 0.000001)
+                    #print(torch.exp(-loss))
+
+                    #print(output[0])
+                    #print(target[0])
+                    #mini_drichilet = Dirichlet(output[0])
+                    #mini_pdf = mini_drichilet.log_prob(target[0],0.000001)
+                    #batch_pdf.append(np.exp(mini_pdf.detach().numpy()))
+                
+                    # reduction method defulat to sum, instead of mean 
+                    batch_loss += loss
+                    batch_loss_no_grad += loss.item()
+
+                    if loss.item() >= 10: 
+
+                        print(target)
+                        print(output)
+
+                "---- BackProp ----"
+                (batch_loss/batch_size).backward()
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.8, norm_type=2)
+                optimizer.step()
+                
+                batch_losses.append(batch_loss_no_grad/batch_size)
+                batches.append(b)
+
+                plt.plot(
+                    batches,
+                    batch_losses
+                )
+                plt.xlabel(f'The number of batches for iteration {it}')
+                plt.ylabel('Training loss')
+
+                if b%20 == 0 and b!= 0: 
+                #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
+                    plt.show()
+                    torch.save(
+                        {   'lr' : learning_rate,
+                            'epoch': it,
+                            'batch': b,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'loss': batch_losses,
+                        }, 
+                        PATH
                     )
-                    attention_batch_outputs = zeros(
-                        batch_size,
-                        target_len,
-                        input_batch.shape[-2],
-                        self.mha_output_dim,
-                    )
-                    model_batch_outputs = zeros(
-                        batch_size,
-                        target_len,
-                        input_batch.shape[-2],
-                        self.model_ouput_dim,
-                    )
-
-                    h0, c0 = self.encoder_lstm.init_hidden(input_batch.shape[-2])
-
-                    #### ------------------------ RESET the gradient ------------------- ##############
-                    # note: we pass 4 examples into the network and we update the gradient
-
-                    # pass in each observation for forward propogation
-                    for batch_index in range(input_batch.shape[0]):
-
-                        optimizer.zero_grad()
-
-                        decoder_ouputs = zeros(
-                            target_len, input_batch.shape[-2], self.lstm_output_dim
-                        )
-
-                        # print(f"Training Batch number: {b} | Example {batch_index}")
-
-                        # L, C, input_dim
-                        input = input_batch[batch_index, :, :, :-1]
-                        target = target_batch[batch_index, :, :, :]
-                        # print(f"The RAW input batch diemsion is {input.shape}")
-                        # print(f"The input target diemsion is {target.shape}")
-
-                        # print(input.shape)
-
-                        ### get the time series embedding encoding
-                        hts_embedding_input = (input[0, :, -1]).long()
-                        # print(hts_embedding_input.shape)
-                        # print(hts_embedding_input)
-                        # print(hts_embedding_input[0,0,:])
-
-                        ## ----------- hts embeddings encoding --- input: tensor(hts_index)----------- ##
-                        embedd_vector = self.embedd_layer(hts_embedding_input)
-                        # print(embedd_vector.shape)
-                        embedd_vector = embedd_vector.expand(
-                            input.shape[0],
-                            embedd_vector.shape[0],
-                            embedd_vector.shape[1],
-                        )
-                        # print(embedd_vector.shape)
-                        input = cat((input, embedd_vector), -1)
-                        # print(f"with ENCODED hierachy, input batch diemsion is {input.shape}")
-
-                        ## ------------ lstm encoder ---input: L, C, input_dim ---------- ##
-                        encoder_ouput, (
-                            encoder_hn,
-                            encoder_cn,
-                        ) = self.encoder_lstm.forward(input, h0, c0)
-                        encoder_cache = (encoder_hn, encoder_cn)
-                        # print(f"The encoder final hidden state shape is {encoder_hn.shape}")
-                        # print(f"The encoder final cell state shape is {encoder_hn.shape}")
-
-                        ## ------------- lstm ddecoder --------L, C, input_dim ----------- ##
-                        decoder_input = (input[-1, :, :]).view(
-                            1, input.shape[-2], input.shape[-1]
-                        )
-                        decoder_cache = encoder_cache
-                        # print(f"The decoder input shape is {decoder_input.shape}")
-
-                        for t in range(target_len):
-                            # -------- recursive prediction----------
-                            # print(t)
-                            (
-                                layer_output,
-                                decoder_output,
-                                (decoder_hn, decoder_cn),
-                            ) = self.decoder_lstm.forward(decoder_input, decoder_cache)
-                            decoder_ouputs[t, :, :] = layer_output
-                            decoder_ouputs[t, :, :] = decoder_ouputs[t, :, :]
-
-                            decoder_input = decoder_output
-                            decoder_cache = (decoder_hn, decoder_cn)
-
-                        # print(f'Agrregated across time, the decoder output dimension is {decoder_ouputs.shape}')
-                        decoder_batch_ouputs[batch_index] = decoder_ouputs
-                        decoder_batch_ouputs[batch_index] = decoder_batch_ouputs[
-                            batch_index
-                        ]
-                        # print(decoder_batch_ouputs.shape)
-
-                        ## ------------- MHA -------- L, C, lstm_output_dim ----------- ##
-                        attention_inputs = decoder_ouputs
-                        # print(f'Attention input has shape : {attention_inputs.shape}')
-
-                        for i in range(self.num_attention_layer):
-
-                            value, attention_weights = self.mha_with_residual.forward(
-                                attention_inputs
-                            )
-                            attention_inputs = value
-                            # print(attention_inputs.shape)
-
-                        attention_batch_outputs[batch_index] = value
-                        attention_batch_outputs[batch_index] = attention_batch_outputs[
-                            batch_index
-                        ]
-                        # print(f"The value-output from the attention layer has shape {attention_outputs.shape} ")
-
-                        ## ------------- linear output (SoftMax) -------- L, C, 1 ----------- ##
-                        model_output = self.linear_output(value)  # L, C, 1
-                        model_batch_outputs[batch_index] = model_output.clone()
-                        model_batch_outputs[batch_index] = model_batch_outputs[
-                            batch_index
-                        ].clone()
-                        # print(f"The value-ouput from the linear layer has shape {model_output.shape} ")
-
-                        model_output = model_output.reshape(
-                            model_output.shape[0], model_output.shape[1]
-                        )
-                        target = target.reshape(target.shape[0], target.shape[1])
-
-                        #print(model_output.shape, target.shape)
-                        #print(model_output[0], target[0])
-
-                        loss = get_loss(model_output, target)
-                        #print(loss)
-
-                        loss.backward()
-                        optimizer.step()
-
-                        batch_loss = batch_loss + loss.item()
-
-                batch_loss = (batch_loss) / n_batches
-                print(f"The batch loss for iteration {it} is {batch_loss}")
-                losses[it] = batch_loss
-
-                tr.set_postfix(loss="{0:.3f}".format(batch_loss))
-
-        return losses
-
-
-if __name__ == "__main__":
-
-    """
-    Data Processing Script
-
-    """
-
-    # dimension about the dataset
-    no_child = 8
-    History = 24
-    Forward = 12
-    covariate_dim = 4
-
-    ### ------- pre-processing of randomly generated dataset for testing --------- ####
-
-    time_dimension = (History + Forward) * 3
-    # proportions matrix T * C
-    proportions = F.softmax(
-        torch.rand(time_dimension, no_child),
-    )
-    # print(proportions.shape)
-
-    # parent sales matrix T*1
-    parent = torch.randint(10, (time_dimension, 1))
-    # print(parent.shape)
-
-    # covariates matrix T * covariate_dim
-    covariate = torch.rand(time_dimension, covariate_dim)
-    # print(covariate.shape)
-
-    # hie_index
-    hie_index = torch.arange(no_child)
-    # print(hie_index)
-
-    proportions_3d = proportions.reshape(time_dimension, no_child, 1)
-    # print(proportions_3d.shape)
-    # print(proportions_3d[0,:,:].sum())
-
-    parent_3d = (parent.unsqueeze(1)).expand(
-        parent.shape[0], no_child, parent.shape[-1]
-    )
-    # print(parent_3d.shape)
-
-    data_3d = torch.cat((proportions_3d, parent_3d), dim=-1)
-    # print(data_3d.shape)
-    # print(data_3d[0,:,:])
-
-    covariate_3d = covariate.unsqueeze(1).expand(
-        covariate.shape[0], no_child, covariate.shape[-1]
-    )
-    # print(covariate_3d.shape)
-    # print(covariate_3d[0,:,:])
-
-    data_3d = torch.cat((data_3d, covariate_3d), dim=-1)
-    # print(data_3d.shape)
-    # print(data_3d[0,:,:])
-
-    hie_index_2d = hie_index.expand(time_dimension, no_child)
-    hie_index_3d = hie_index_2d.reshape(
-        hie_index_2d.shape[0], hie_index_2d.shape[-1], 1
-    )
-    # print(hie_index_3d.shape)
-    # print(hie_index_3d[0,:,:])
-
-    data_3d = torch.cat((data_3d, hie_index_3d), dim=-1)
-    # print(data_3d.shape)
-    # print(data_3d[0,:,:])
-
-    number_observations = data_3d.shape[0] - (History + Forward) + 1
-
-    data_3d_time_batched = torch.empty(
-        number_observations, History + Forward, data_3d.shape[1], data_3d.shape[2]
-    )
-
-    for i in range(number_observations):
-
-        data_3d_time_batched[i, :, :, :] = data_3d[i : i + History + Forward, :, :]
-
-    # print(data_3d_time_batched.shape)
-    # print(data_3d_time_batched[-1,:,:,:].shape)
-
-    if torch.equal(data_3d_time_batched[-1, -1, :, :], data_3d[-1, :, :]):
-
-        print("data correctly processed to generate time-bacted tensor")
-
-        input_tensor = torch.empty(
-            number_observations,
-            History,
-            data_3d_time_batched.shape[-2],
-            data_3d_time_batched.shape[-1],
-        )
-
-        ## We first use the recursive predicitng mechanism in LSTM, in the future we release more blocks that adapt to teacher-forcing/mixed training
-        target_tensor = torch.empty(
-            number_observations,
-            Forward,
-            data_3d_time_batched.shape[-2],
-            1
-            # data_3d_time_batched.shape[-1]
-        )
-
-        print(input_tensor.shape)
-        print(target_tensor.shape)
-
-        print("Entering the training pipeline")
-
-        for i in range(data_3d_time_batched.shape[0]):
-
-            input_tensor[i] = data_3d_time_batched[i, :History, :, :]
-            target_2d = data_3d_time_batched[i, History:, :, 0]
-            target_tensor[i] = target_2d.reshape(
-                target_2d.shape[0], target_2d.shape[1], 1
-            )
-
-            # print(input_tensor.shape)
-            # print(target_tensor.shape)
-
-        print(input_tensor.shape)
-        print(target_tensor.shape)
-        # print(target_tensor[-1,0,:,:].sum())
-
-        ###---------- dimension on the model hypter-parameters from the paper ------------ ######
-        num_hts_embedd = no_child
-        hts_embedd_dim = 8
-
-        lstm_input_dim = 2 + covariate_dim + hts_embedd_dim
-        lstm_hidden_dim = 48
-        lstm_num_layer = 1
-        lstm_output_dim = 64
-
-        mha_embedd_dim = lstm_output_dim
-        num_head = 4
-        num_attention_layer = 1
-        mha_output_dim = mha_embedd_dim
-        residual_output_dim = mha_output_dim
-        model_ouput_dim = 1
-
-        # define the model object
-        p_model = proportion_model(
-            num_hts_embedd,
-            hts_embedd_dim,  # ts embedding hyper pars
-            lstm_input_dim,
-            lstm_hidden_dim,
-            lstm_num_layer,
-            lstm_output_dim,  # lstm hyper pars
-            mha_embedd_dim,
-            num_head,
-            num_attention_layer,  # mha hyper pars
-            mha_output_dim,
-            residual_output_dim,  # skip connection hyper pars
-            model_ouput_dim,  # output later hyper pars
-        )
-
-        ###---------- trainign parameters from the paper ------------ ######
-
-        n_epochs = 50
-        target_len = Forward
-        batch_size = 4
-        l_r = 0.00079
-
-        # start training
-        p_model.train(
-            input_tensor,
-            target_tensor,
-            n_epochs,
-            target_len,
-            batch_size,
-            learning_rate=l_r,
-        )
-
-    else:
-
-        raise "Missed processed data point, not all time points are batched"
+                #print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
+
+            #print(f"Training for iteration {it} is completed")
+            iter_loss = sum(batch_losses)/n_batches 
+            #print(f"The average loss for iteration {it} is {iter_loss}")
+            tr.set_postfix(loss="{0:.3f}".format(iter_loss))
+
+        iter_losses.append(iter_loss)
+    
+    return model, iter_losses
