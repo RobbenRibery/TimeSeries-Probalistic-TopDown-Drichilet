@@ -13,7 +13,6 @@ from dirichlet import *
 import numpy as np
 import torch
 
-
 writer = SummaryWriter()
 torch.autograd.set_detect_anomaly(True)
 
@@ -270,7 +269,7 @@ class output(nn.Module):
 
         output = self.linear(x)
         output = torch.exp(output)
-        output = torch.clamp(output, max=50)
+        #output = torch.clamp(output, max=50)
 
         return output
 
@@ -409,14 +408,18 @@ class proportion_model(nn.Module):
         return output, decoder_ouputs, value 
 
 def train_model(
-    model, 
-    input_tensor, 
-    target_tensor, 
-    n_epochs, 
-    target_len, 
-    batch_size, 
-    learning_rate,
-    PATH = "model.pt" 
+    model :proportion_model, 
+    input_tensor: torch.tensor, 
+    target_tensor: torch.tensor, 
+    n_epochs :int, 
+    target_len : int, 
+    batch_size :int, 
+    learning_rate : float,
+    PATH = "model.pt",
+    clip : bool = False,
+    tracing : bool = True, 
+    val_input_tensor : torch.tensor = None,
+    val_target_tensor: torch.tensor = None, 
     ):
     """
     All implementation is based on Batch = False
@@ -454,38 +457,44 @@ def train_model(
 
     number_observations = input_tensor.shape[0]
 
-    n_batches = number_observations//batch_size + number_observations%batch_size 
+    n_complete_batches = number_observations//batch_size 
+    n_batches = n_complete_batches + 1
+
     print(f"There are {n_batches} batches per iteration")
 
     with trange(iter_start, n_epochs) as tr:
-        plt.figure()
         iter_losses = []
         for it in tr:
 
             batch_losses = []
-            batches = []
+            
             plt.figure()
-            #print(f'Iteration: {it}')
+            plt.xlabel(f'The number of batches for iteration {it}')
+            plt.ylabel('Training loss (Negative Log likelihood')
+
+            print(f'Trainign for Iteration: {it} starts')
             
             for b in range(batch_start, n_batches):
+
+                print(f'Training for Iteration: {it} Batch {b} starts')
 
                 #print(f'Iteration: {it} - Batch: {b}')
                 no_child = input_tensor.shape[-3]
 
                 ### select the dataset according to the batch size
-                if b + batch_size <= n_batches:
-                    input_batch = input_tensor[b : b + batch_size]
-                    target_batch = target_tensor[b : b + batch_size]
+                if b <= n_complete_batches-1:
+                    input_batch = input_tensor[b*batch_size : (b+1) * batch_size]
+                    target_batch = target_tensor[b*batch_size : (b+1) * batch_size]
                 else: 
-                    input_batch = input_tensor[b:]
-                    target_batch = target_tensor[b:]
+                    input_batch = input_tensor[b*batch_size:]
+                    target_batch = target_tensor[b*batch_size:]
 
                 decoder_batch_ouputs = zeros(input_batch.shape[0], target_len, no_child, model.lstm_output_dim,)
                 attention_batch_outputs = zeros(input_batch.shape[0], target_len, no_child, model.mha_output_dim,)
                 model_batch_outputs = zeros(input_batch.shape[0], target_len, no_child, model.model_ouput_dim,)
 
-                batch_loss = 0.0
-                batch_loss_no_grad = 0.0
+                batch_loss = 0.
+                batch_loss_no_grad = 0.
                 "---- ZERO GRAD ----"
                 optimizer.zero_grad()
                 # pass in each observation for forward propogation
@@ -508,7 +517,6 @@ def train_model(
 
                     #print(output)
                     #print(target)
-
                     loss = get_loss(output, target, 0.000001)
                     #print(torch.exp(-loss))
 
@@ -522,28 +530,30 @@ def train_model(
                     batch_loss += loss
                     batch_loss_no_grad += loss.item()
 
-                    if loss.item() >= 10: 
-
-                        print(target)
-                        print(output)
-
                 "---- BackProp ----"
-                (batch_loss/batch_size).backward()
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.8, norm_type=2)
+                average_batch_loss = batch_loss/batch_size
+                average_batch_loss.backward() 
+            
+                if clip: 
+                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=2, norm_type=2)
                 optimizer.step()
                 
-                batch_losses.append(batch_loss_no_grad/batch_size)
-                batches.append(b)
+                batch_losses.append(average_batch_loss)
 
-                plt.plot(
-                    batches,
-                    batch_losses
-                )
-                plt.xlabel(f'The number of batches for iteration {it}')
-                plt.ylabel('Training loss')
+                "---- Tracing  ----"
+                if tracing:
+                    if batch_loss_no_grad >= 20: 
+                        batch_loss_no_grad = 20
+
+                    plt.plot(
+                        b,
+                        (batch_loss_no_grad/batch_size),
+                        'rs',
+                    )
 
                 if b%20 == 0 and b!= 0: 
                 #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
+                    "---- Saving ----- "
                     plt.show()
                     torch.save(
                         {   'lr' : learning_rate,
@@ -555,7 +565,15 @@ def train_model(
                         }, 
                         PATH
                     )
-                #print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
+                    "--- Validation ---- "
+                    model.eval()
+                    valid_ouput = model.forward(val_input_tensor)
+                    # C, F 
+                    distributions = Dirichlet(valid_ouput)
+                    
+
+
+
 
             #print(f"Training for iteration {it} is completed")
             iter_loss = sum(batch_losses)/n_batches 
@@ -565,3 +583,84 @@ def train_model(
         iter_losses.append(iter_loss)
     
     return model, iter_losses
+
+
+
+def train_model_test(
+    model, 
+    input_tensor, 
+    target_tensor, 
+    n_epochs, 
+    target_len, 
+    batch_size, 
+    learning_rate,
+    PATH = "model.pt",
+    clip = False,
+    ):
+    """
+    All implementation is based on Batch = False
+    input_tensor: 4D torch tensor of shape b, H, C, input_dim
+    target_tensor: 4D torch tensor of shape b, F, C, 1
+        b: time-batched input
+        C: number of the children
+        H: history data points
+        F: future data points
+    """
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    try: 
+        checkpoint = torch.load(PATH) 
+
+        if learning_rate == checkpoint['lr']: 
+
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
+
+            iter_start = checkpoint['epoch']
+            batch_start = checkpoint['batch']
+
+        else: 
+            iter_start = 0 
+            batch_start = 0 
+
+    except FileNotFoundError:
+
+        iter_start = 0 
+        batch_start = 0 
+        pass 
+
+    print(f"Trainign starting from iteration {iter_start}, batch {batch_start}")
+
+    number_observations = input_tensor.shape[0]
+
+    n_complete_batches = number_observations//batch_size 
+    n_batches = n_complete_batches + 1
+
+    print(f"There are {n_batches} batches per iteration")
+
+    with trange(iter_start, n_epochs) as tr:
+        iter_losses = []
+        for it in tr:
+
+            batch_losses = []
+            batches = []
+            #plt.figure()
+
+            print(f'Trainign for Iteration: {it} starts')
+            
+            for b in range(batch_start, n_batches):
+
+                print(f'Training for Iteration: {it} Batch {b} starts')
+
+                #print(f'Iteration: {it} - Batch: {b}')
+                no_child = input_tensor.shape[-3]
+
+                ### select the dataset according to the batch size
+                if b <= n_complete_batches-1:
+                    input_batch = input_tensor[b*batch_size : (b+1) * batch_size]
+                    print(input_batch.shape)
+                    target_batch = target_tensor[b*batch_size : (b+1) * batch_size]
+                else: 
+                    input_batch = input_tensor[b*batch_size:]
+                    target_batch = target_tensor[b*batch_size:]
+                    print(input_batch.shape)
