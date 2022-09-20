@@ -51,5 +51,3 @@ ujson==5.4.0
 urllib3==1.26.12
 Werkzeug==2.2.2
 zipp==3.8.1
-
-
