@@ -9,9 +9,10 @@ from torch import nn
 from torch import optim
 from tqdm import trange
 import torch.nn.functional as F
-from dirichlet import * 
 import numpy as np
 import torch
+from pyro.distributions import Dirichlet
+from pyro.contrib.forecast import eval_crps 
 
 writer = SummaryWriter()
 torch.autograd.set_detect_anomaly(True)
@@ -37,7 +38,7 @@ def get_loss(output, target, epsilon):
     # print(f"the event shape is {output.shape[-1:]}")
     # print(drichilet)
 
-    loss = drichilet.log_prob(target, epsilon)
+    loss = drichilet.log_prob(target + epsilon)
     loss_sum = loss.sum(-1)
 
     return -loss_sum
@@ -420,6 +421,7 @@ def train_model(
     tracing : bool = True, 
     val_input_tensor : torch.tensor = None,
     val_target_tensor: torch.tensor = None, 
+    epsilon: float = 1e-08
     ):
     """
     All implementation is based on Batch = False
@@ -569,10 +571,9 @@ def train_model(
                     model.eval()
                     valid_ouput = model.forward(val_input_tensor)
                     # C, F 
-                    distributions = Dirichlet(valid_ouput)
+                    inference_drichilet = Dirichlet(valid_ouput)
+                    eval_crps(inference_drichilet, val_target_tensor)
                     
-
-
 
 
             #print(f"Training for iteration {it} is completed")
