@@ -38,7 +38,12 @@ def get_loss(output, target, epsilon):
     # print(f"the event shape is {output.shape[-1:]}")
     # print(drichilet)
 
-    loss = drichilet.log_prob(target + epsilon)
+    target += epsilon
+
+    #print(output.shape)
+    #print(target.shape)
+
+    loss = drichilet.log_prob(target)
     loss_sum = loss.sum(-1)
 
     return -loss_sum
@@ -513,13 +518,13 @@ def train_model(
 
                     output = torch.squeeze(output, dim=-1)
                     target = torch.squeeze(target, dim=-1)
-                    # print(output.shape)
-                    # print(target.shape)
+                    #print(output.shape)
+                    #print(target.shape)
                     target = torch.permute(target, (1,0))
 
                     #print(output)
                     #print(target)
-                    loss = get_loss(output, target, 0.000001)
+                    loss = get_loss(output, target, epsilon)
                     #print(torch.exp(-loss))
 
                     #print(output[0])
@@ -535,22 +540,21 @@ def train_model(
                 "---- BackProp ----"
                 average_batch_loss = batch_loss/batch_size
                 average_batch_loss.backward() 
-            
                 if clip: 
                     nn.utils.clip_grad_norm_(model.parameters(), max_norm=2, norm_type=2)
                 optimizer.step()
+
+                average_batch_loss_no_grad = batch_loss_no_grad/batch_size
+                if average_batch_loss_no_grad >= 20: 
+                    average_batch_loss_no_grad = 20
                 
-                batch_losses.append(average_batch_loss)
+                batch_losses.append(average_batch_loss_no_grad)
 
                 "---- Tracing  ----"
                 if tracing:
-                    if batch_loss_no_grad >= 20: 
-                        batch_loss_no_grad = 20
-
                     plt.plot(
-                        b,
-                        (batch_loss_no_grad/batch_size),
-                        'rs',
+                        list(range(1,b+2)),
+                        (batch_losses),
                     )
 
                 if b%20 == 0 and b!= 0: 
@@ -567,15 +571,14 @@ def train_model(
                         }, 
                         PATH
                     )
-                    "--- Validation ---- "
-                    model.eval()
-                    valid_ouput = model.forward(val_input_tensor)
-                    # C, F 
-                    inference_drichilet = Dirichlet(valid_ouput)
-                    eval_crps(inference_drichilet, val_target_tensor)
+                "--- Validation ---- "
+                ### doing eval might destroy the model 
+                # model.eval()
+                # valid_ouput = model.forward(val_input_tensor)
+                # # C, F 
+                # inference_drichilet = Dirichlet(valid_ouput)
+                # eval_crps(inference_drichilet, val_target_tensor)
                     
-
-
             #print(f"Training for iteration {it} is completed")
             iter_loss = sum(batch_losses)/n_batches 
             #print(f"The average loss for iteration {it} is {iter_loss}")
