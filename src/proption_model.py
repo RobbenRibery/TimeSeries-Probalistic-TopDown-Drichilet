@@ -251,7 +251,7 @@ class mha_with_residual(nn.Module):
         self.linear = Linear(self.mha_output_dim, self.mha_output_dim)
         self.batch_norm_layer = nn.BatchNorm1d(self.mha_embedd_dim)
 
-    def forward(self, x):
+    def forward(self, x:torch.tensor):
 
         values, atten_wieghts = self.mha(x, x, x)
         values = self.linear(values)
@@ -295,6 +295,7 @@ class proportion_model(nn.Module):
         mha_output_dim,
         residual_output_dim,  # skip connection hyper pars
         model_ouput_dim,  # output later hyper pars
+        mha_activation = nn.ReLU(),
     ) -> None:
         super(proportion_model, self).__init__()
 
@@ -341,7 +342,7 @@ class proportion_model(nn.Module):
             self.mha_embedd_dim,
             self.num_head,
             self.mha_output_dim,
-            activation=nn.ReLU(),
+            activation= mha_activation,
             batch_first=True,
         )
         self.output = output(self.mha_output_dim, self.model_ouput_dim)
