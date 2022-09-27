@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from pyro.distributions import Dirichlet
 from pyro.contrib.forecast import eval_crps 
+from typing import List
 
 writer = SummaryWriter()
 torch.autograd.set_detect_anomaly(True)
@@ -350,14 +351,17 @@ class proportion_model(nn.Module):
 
     def forward(
         self,
-        target_len,
+        target_len : int,
         input :torch.tensor,
+        training : bool = True,
     ): 
         """
         implement the forward propogation for each single observation 
 
         input: (C, H, dim), embedding dim always the last layer 
         """
+        if not training: 
+            self.eval()
 
         # empty tensor to hold decoder ouputs 
         decoder_ouputs = empty(
@@ -413,6 +417,16 @@ class proportion_model(nn.Module):
         output = self.output(value)  # L, C, 1
 
         return output, decoder_ouputs, value 
+
+    def evaluate_distribution_crps(self, target_len:int, input: torch.tensor, target: torch.tensor, n_samples:int = 200) -> float: 
+
+        self.eval()
+        output, _, _  = self.forward(target_len=target_len, input=input)
+        predictive_distribution = Dirichlet(output)
+        n_samples = 200
+        samples = predictive_distribution.sample([n_samples])
+        crps = eval_crps(samples, target)
+        return crps
 
 def train_model(
     model :proportion_model, 
@@ -574,11 +588,8 @@ def train_model(
                     )
                 "--- Validation ---- "
                 ### doing eval might destroy the model 
-                # model.eval()
-                # valid_ouput = model.forward(val_input_tensor)
-                # # C, F 
-                # inference_drichilet = Dirichlet(valid_ouput)
-                # eval_crps(inference_drichilet, val_target_tensor)
+                crps = model.evaluate_distribution_crps(target_len, val_input_tensor, val_target_tensor, n_samples=100)
+
                     
             #print(f"Training for iteration {it} is completed")
             iter_loss = sum(batch_losses)/n_batches 
@@ -590,82 +601,3 @@ def train_model(
     return model, iter_losses
 
 
-
-def train_model_test(
-    model, 
-    input_tensor, 
-    target_tensor, 
-    n_epochs, 
-    target_len, 
-    batch_size, 
-    learning_rate,
-    PATH = "model.pt",
-    clip = False,
-    ):
-    """
-    All implementation is based on Batch = False
-    input_tensor: 4D torch tensor of shape b, H, C, input_dim
-    target_tensor: 4D torch tensor of shape b, F, C, 1
-        b: time-batched input
-        C: number of the children
-        H: history data points
-        F: future data points
-    """
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-    try: 
-        checkpoint = torch.load(PATH) 
-
-        if learning_rate == checkpoint['lr']: 
-
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
-
-            iter_start = checkpoint['epoch']
-            batch_start = checkpoint['batch']
-
-        else: 
-            iter_start = 0 
-            batch_start = 0 
-
-    except FileNotFoundError:
-
-        iter_start = 0 
-        batch_start = 0 
-        pass 
-
-    print(f"Trainign starting from iteration {iter_start}, batch {batch_start}")
-
-    number_observations = input_tensor.shape[0]
-
-    n_complete_batches = number_observations//batch_size 
-    n_batches = n_complete_batches + 1
-
-    print(f"There are {n_batches} batches per iteration")
-
-    with trange(iter_start, n_epochs) as tr:
-        iter_losses = []
-        for it in tr:
-
-            batch_losses = []
-            batches = []
-            #plt.figure()
-
-            print(f'Trainign for Iteration: {it} starts')
-            
-            for b in range(batch_start, n_batches):
-
-                print(f'Training for Iteration: {it} Batch {b} starts')
-
-                #print(f'Iteration: {it} - Batch: {b}')
-                no_child = input_tensor.shape[-3]
-
-                ### select the dataset according to the batch size
-                if b <= n_complete_batches-1:
-                    input_batch = input_tensor[b*batch_size : (b+1) * batch_size]
-                    print(input_batch.shape)
-                    target_batch = target_tensor[b*batch_size : (b+1) * batch_size]
-                else: 
-                    input_batch = input_tensor[b*batch_size:]
-                    target_batch = target_tensor[b*batch_size:]
-                    print(input_batch.shape)

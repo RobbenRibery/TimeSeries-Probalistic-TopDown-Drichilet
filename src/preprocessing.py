@@ -68,7 +68,6 @@ def get_input(ec:np.ndarray, ac:np.ndarray, yp:pd.DataFrame):
 
 def get_time_batched_arrays(History: int, Forward: int, input:np.ndarray):
 
-
     number_observations = input.shape[1] - (History + Forward) + 1
 
     input_time_batched = np.empty(
