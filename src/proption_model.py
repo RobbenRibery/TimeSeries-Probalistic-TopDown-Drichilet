@@ -1,8 +1,6 @@
-from tabnanny import check
-from matplotlib.pyplot import axis
-import matplotlib.pyplot as plt
-from nbformat import write
-from torch.utils.tensorboard import SummaryWriter 
+from cProfile import label
+from typing import List
+from unicodedata import name
 from torch.nn import LSTM, MultiheadAttention, Linear
 from torch import tensor, rand, zeros, matmul, permute, log, lgamma, cat, empty
 from torch import nn
@@ -11,11 +9,12 @@ from tqdm import trange
 import torch.nn.functional as F
 import numpy as np
 import torch
+
 from pyro.distributions import Dirichlet
 from pyro.contrib.forecast import eval_crps 
-from typing import List
 
-writer = SummaryWriter()
+import matplotlib.pyplot as plt
+
 torch.autograd.set_detect_anomaly(True)
 
 class Dirichlet_exp(object):
@@ -31,7 +30,7 @@ class Dirichlet_exp(object):
         return self._coef * np.multiply.reduce([xx ** (aa - 1)
                                                for (xx, aa)in zip(x, self._alpha)])
 
-def get_loss(output, target, epsilon):
+def get_loss(output:torch.tensor, target:torch.tensor, epsilon:float, threshold: float = None):
 
     drichilet = Dirichlet(concentration=output)
     # output 
@@ -39,10 +38,21 @@ def get_loss(output, target, epsilon):
     # print(f"the event shape is {output.shape[-1:]}")
     # print(drichilet)
 
-    target += epsilon
+    # target += epsilon
+    # print(target.shape) 
+    # print(target)
+    
+    row_indexs = (target >= threshold).nonzero()[:,0]
+    col_indexs = (target >= threshold).nonzero()[:,1]
 
-    #print(output.shape)
-    #print(target.shape)
+    for i in range(len(row_indexs)): 
+        target[row_indexs[i],col_indexs[i]] -= epsilon
+
+        target[row_indexs[i],0:col_indexs[i]] += epsilon/2
+        target[row_indexs[i],col_indexs[i]+1:] += epsilon/2
+    
+    # print(target)
+    # print(target.sum(dim=1))
 
     loss = drichilet.log_prob(target)
     loss_sum = loss.sum(-1)
@@ -147,10 +157,9 @@ class encoder_lstm(nn.Module):
         :                              element in the sequence
         """
 
-        encoder_ouptut, (self.hn, self.cn) = self.lstm(x,)
-        self.cache = (self.hn, self.cn)
+        encoder_ouptut, endoer_hidden_output = self.lstm(x,)
 
-        return encoder_ouptut, self.cache
+        return encoder_ouptut, endoer_hidden_output
 
 
 class decoder_lstm(nn.Module):
@@ -189,7 +198,7 @@ class decoder_lstm(nn.Module):
         self.linear_1 = Linear(self.lstm_hidden_dim, self.lstm_input_dim)
         self.linear_2 = Linear(self.lstm_input_dim, self.lstm_output_dim)
 
-    def forward(self, x, encoder_cache):
+    def forward(self, x, endoer_hidden_output):
 
         """
 
@@ -199,8 +208,7 @@ class decoder_lstm(nn.Module):
             hn: (D time lstm_num_layers, # nathces, lstm_hidden_dim))
             cn: (D time lstm_num_layers, # nathces, lstm_hidden_dim))
             D = 2 if bi-directional, 1 if unidirectional
-        """
-        (hn, cn) = encoder_cache
+        """ 
 
         ### commented the line due to the fact that we are running a batched-decoder LSTM
         # if self.batch_first:
@@ -209,8 +217,7 @@ class decoder_lstm(nn.Module):
         # else:
         #     x = x.unsqueeze(0)
 
-        decoder_output, (self.hn, self.cn) = self.lstm(x, (hn, cn))
-        self.cache = (self.hn, self.cn)
+        decoder_output, decodoer_hidden_output = self.lstm(x, endoer_hidden_output)
         decoder_output = self.linear_1(decoder_output)
 
         ### commented the line due to the fact that we are running a batched-decoder LSTM
@@ -218,10 +225,9 @@ class decoder_lstm(nn.Module):
         #     decoder_lstm_output = decoder_lstm_output.squeeze(1)
         # else:
         #     decoder_lstm_output = decoder_lstm_output.squeeze(0)
-
         layer_output = self.linear_2(decoder_output)
 
-        return layer_output, decoder_output, self.cache
+        return layer_output, decoder_output, decodoer_hidden_output
 
 
 class mha_with_residual(nn.Module):
@@ -258,6 +264,7 @@ class mha_with_residual(nn.Module):
         values = self.linear(values)
         values = values + x
         values = self.activation(values)
+        #print(values)
         values = self.batch_norm_layer(values.permute(0,2,1))
         values = values.permute(0,2,1) 
 
@@ -284,6 +291,7 @@ class output(nn.Module):
 class proportion_model(nn.Module):
     def __init__(
         self,
+        target_len : int,
         num_hts_embedd,
         hts_embedd_dim,  # ts embedding hyper pars
         lstm_input_dim,
@@ -347,25 +355,24 @@ class proportion_model(nn.Module):
             batch_first=True,
         )
         self.output = output(self.mha_output_dim, self.model_ouput_dim)
+        self.target_len = target_len
 
 
     def forward(
         self,
-        target_len : int,
         input :torch.tensor,
-        training : bool = True,
     ): 
         """
         implement the forward propogation for each single observation 
 
         input: (C, H, dim), embedding dim always the last layer 
         """
-        if not training: 
-            self.eval()
+        # if not training: 
+        #     self.eval()
 
         # empty tensor to hold decoder ouputs 
         decoder_ouputs = empty(
-            target_len, 
+            self.target_len, 
             input.shape[0],
             self.lstm_output_dim,
         )
@@ -388,21 +395,20 @@ class proportion_model(nn.Module):
         input = input.permute(0,2,1) 
 
         # forward prop - LSTM encoder 
-        encoder_ouput, ( encoder_hn, encoder_cn,) = self.encoder_lstm.forward(input) 
-        encoder_cache = (encoder_hn, encoder_cn) 
+        encoder_ouput, endoer_hidden_output = self.encoder_lstm.forward(input)
 
         # last timestamp from the input
         decoder_input = torch.unsqueeze((input[:, -1, :]), dim = 1)
-        decoder_cache = encoder_cache
+        decoder_cache = endoer_hidden_output
 
         # forward prop - LSTM decoder 
-        for t in range(target_len):
-            (layer_output, decoder_output,(decoder_hn, decoder_cn),) = self.decoder_lstm.forward(decoder_input, decoder_cache)
+        for t in range(self.target_len):
+            (layer_output, decoder_output,decodoer_hidden_output,) = self.decoder_lstm.forward(decoder_input, decoder_cache)
 
             decoder_ouputs[t, :, :] = torch.squeeze(layer_output, dim = 1)
 
             decoder_input = decoder_output
-            decoder_cache = (decoder_hn, decoder_cn)
+            decoder_cache = decodoer_hidden_output
 
         # forward prop - multi-headed attention 
         # decoder outputs (F, C, dim)
@@ -418,12 +424,15 @@ class proportion_model(nn.Module):
 
         return output, decoder_ouputs, value 
 
-    def evaluate_distribution_crps(self, target_len:int, input: torch.tensor, target: torch.tensor, n_samples:int = 200) -> float: 
+    def evaluate_distribution_crps(self, input: torch.tensor, target: torch.tensor, n_samples:int = 200) -> float: 
 
         self.eval()
-        output, _, _  = self.forward(target_len=target_len, input=input)
+        output, _, _  = self.forward(input=input)
+        output = torch.squeeze(output, dim=-1) 
+        target = torch.squeeze(target, dim=-1)
+        target = torch.permute(target, (1,0))
+        
         predictive_distribution = Dirichlet(output)
-        n_samples = 200
         samples = predictive_distribution.sample([n_samples])
         crps = eval_crps(samples, target)
         return crps
@@ -441,7 +450,8 @@ def train_model(
     tracing : bool = True, 
     val_input_tensor : torch.tensor = None,
     val_target_tensor: torch.tensor = None, 
-    epsilon: float = 1e-08
+    epsilon: float = 1e-05,
+    threshold: float = 0.95
     ):
     """
     All implementation is based on Batch = False
@@ -454,26 +464,26 @@ def train_model(
     """
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    try: 
-        checkpoint = torch.load(PATH) 
+    # try: 
+    #     checkpoint = torch.load(PATH) 
 
-        if learning_rate == checkpoint['lr']: 
+    #     if learning_rate == checkpoint['lr']: 
 
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
+    #         model.load_state_dict(checkpoint['model_state_dict'])
+    #         optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
 
-            iter_start = checkpoint['epoch']
-            batch_start = checkpoint['batch']
+    #         iter_start = checkpoint['epoch']
+    #         batch_start = checkpoint['batch']
 
-        else: 
-            iter_start = 0 
-            batch_start = 0 
+    #     else: 
+    #         iter_start = 0 
+    #         batch_start = 0 
 
-    except FileNotFoundError:
+    # except FileNotFoundError:
 
-        iter_start = 0 
-        batch_start = 0 
-        pass 
+    iter_start = 0 
+    batch_start = 0 
+        #pass 
 
     print(f"Trainign starting from iteration {iter_start}, batch {batch_start}")
 
@@ -489,10 +499,7 @@ def train_model(
         for it in tr:
 
             batch_losses = []
-            
-            plt.figure()
-            plt.xlabel(f'The number of batches for iteration {it}')
-            plt.ylabel('Training loss (Negative Log likelihood')
+            crpss = []
 
             print(f'Trainign for Iteration: {it} starts')
             
@@ -526,28 +533,18 @@ def train_model(
                     target = target_batch[batch_index, :, :, :] 
                     #print(input.shape)
 
-                    output, decoder_ouputs, value = model.forward(target_len, input)
+                    output, decoder_ouputs, value = model.forward(input)
                     decoder_batch_ouputs[batch_index] = decoder_ouputs 
                     attention_batch_outputs[batch_index] = value
                     model_batch_outputs[batch_index] = output 
 
+
                     output = torch.squeeze(output, dim=-1)
                     target = torch.squeeze(target, dim=-1)
-                    #print(output.shape)
-                    #print(target.shape)
                     target = torch.permute(target, (1,0))
 
-                    #print(output)
-                    #print(target)
-                    loss = get_loss(output, target, epsilon)
-                    #print(torch.exp(-loss))
+                    loss = get_loss(output, target, epsilon, threshold=threshold)
 
-                    #print(output[0])
-                    #print(target[0])
-                    #mini_drichilet = Dirichlet(output[0])
-                    #mini_pdf = mini_drichilet.log_prob(target[0],0.000001)
-                    #batch_pdf.append(np.exp(mini_pdf.detach().numpy()))
-                
                     # reduction method defulat to sum, instead of mean 
                     batch_loss += loss
                     batch_loss_no_grad += loss.item()
@@ -561,36 +558,55 @@ def train_model(
 
                 average_batch_loss_no_grad = batch_loss_no_grad/batch_size
                 if average_batch_loss_no_grad >= 20: 
+                    print(f'Loss exploded to {average_batch_loss_no_grad} at {b+1}')
                     average_batch_loss_no_grad = 20
-                
-                batch_losses.append(average_batch_loss_no_grad)
+                batch_losses.append(average_batch_loss_no_grad) 
+
+                "---- EVAL ----"
+                ### doing eval might destroy the model 
+                crps = model.evaluate_distribution_crps(val_input_tensor, val_target_tensor, n_samples=100)
+                crpss.append(crps)
+                model.train()
 
                 "---- Tracing  ----"
                 if tracing:
+
+                    plt.figure(1, figsize=(10,5))
+                    plt.subplot(211)
                     plt.plot(
                         list(range(1,b+2)),
                         (batch_losses),
+                        label = 'train'
                     )
+                    plt.grid()
+                    plt.ylabel('Loss')
 
+                    plt.subplot(212)
+                    plt.plot(
+                        list(range(1,b+2)),
+                        (crpss),
+                        label = 'valid',
+                    )
+                    plt.grid()
+                    plt.ylabel('crps')
+                    
                 if b%20 == 0 and b!= 0: 
                 #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
                     "---- Saving ----- "
                     plt.show()
-                    torch.save(
-                        {   'lr' : learning_rate,
-                            'epoch': it,
-                            'batch': b,
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'loss': batch_losses,
-                        }, 
-                        PATH
-                    )
-                "--- Validation ---- "
-                ### doing eval might destroy the model 
-                crps = model.evaluate_distribution_crps(target_len, val_input_tensor, val_target_tensor, n_samples=100)
 
-                    
+                    # torch.save(
+                    #     {   'lr' : learning_rate,
+                    #         'epoch': it,
+                    #         'batch': b,
+                    #         'model_state_dict': model.state_dict(),
+                    #         'optimizer_state_dict': optimizer.state_dict(),
+                    #         'loss': batch_losses,
+                    #     }, 
+                    #     PATH
+                    # )
+                "--- Validation ---- "
+
             #print(f"Training for iteration {it} is completed")
             iter_loss = sum(batch_losses)/n_batches 
             #print(f"The average loss for iteration {it} is {iter_loss}")
