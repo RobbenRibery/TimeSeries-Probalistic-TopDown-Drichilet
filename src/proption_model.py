@@ -42,19 +42,19 @@ def get_loss(output:torch.tensor, target:torch.tensor, epsilon:float, threshold:
     # print(target.shape) 
     # print(target)
     
-    row_indexs = (target >= threshold).nonzero()[:,0]
-    col_indexs = (target >= threshold).nonzero()[:,1]
+    # row_indexs = (target >= threshold).nonzero()[:,0]
+    # col_indexs = (target >= threshold).nonzero()[:,1]
 
-    for i in range(len(row_indexs)): 
-        target[row_indexs[i],col_indexs[i]] -= epsilon
+    # for i in range(len(row_indexs)): 
+    #     target[row_indexs[i],col_indexs[i]] -= epsilon
 
-        target[row_indexs[i],0:col_indexs[i]] += epsilon/2
-        target[row_indexs[i],col_indexs[i]+1:] += epsilon/2
+    #     target[row_indexs[i],0:col_indexs[i]] += epsilon/2
+    #     target[row_indexs[i],col_indexs[i]+1:] += epsilon/2
     
     # print(target)
     # print(target.sum(dim=1))
 
-    loss = drichilet.log_prob(target)
+    loss = drichilet.log_prob(target+epsilon)
     loss_sum = loss.sum(-1)
 
     return -loss_sum
@@ -258,14 +258,20 @@ class mha_with_residual(nn.Module):
         self.linear = Linear(self.mha_output_dim, self.mha_output_dim)
         self.batch_norm_layer = nn.BatchNorm1d(self.mha_embedd_dim)
 
-    def forward(self, x:torch.tensor):
+    def forward(self, x:torch.tensor, b=None):
 
         values, atten_wieghts = self.mha(x, x, x)
         values = self.linear(values)
         values = values + x
         values = self.activation(values)
         #print(values)
+        # if b == 439:
+        #     print(values.shape)
+        #     print(values)
         values = self.batch_norm_layer(values.permute(0,2,1))
+        if b == 439:
+            print(values.shape)
+            print(values)
         values = values.permute(0,2,1) 
 
         return values, atten_wieghts
@@ -288,7 +294,7 @@ class output(nn.Module):
         return output
 
 
-class proportion_model(nn.Module):
+class ProportionModel(nn.Module):
     def __init__(
         self,
         target_len : int,
@@ -306,7 +312,7 @@ class proportion_model(nn.Module):
         model_ouput_dim,  # output later hyper pars
         mha_activation = nn.ReLU(),
     ) -> None:
-        super(proportion_model, self).__init__()
+        super(ProportionModel, self).__init__()
 
         """
         lstm_input_dim: input dimensiotn of the LSTM encoder 
@@ -361,6 +367,7 @@ class proportion_model(nn.Module):
     def forward(
         self,
         input :torch.tensor,
+        b: int = None,
     ): 
         """
         implement the forward propogation for each single observation 
@@ -404,9 +411,9 @@ class proportion_model(nn.Module):
         # forward prop - LSTM decoder 
         for t in range(self.target_len):
             (layer_output, decoder_output,decodoer_hidden_output,) = self.decoder_lstm.forward(decoder_input, decoder_cache)
-
+            
             decoder_ouputs[t, :, :] = torch.squeeze(layer_output, dim = 1)
-
+                
             decoder_input = decoder_output
             decoder_cache = decodoer_hidden_output
 
@@ -414,7 +421,8 @@ class proportion_model(nn.Module):
         # decoder outputs (F, C, dim)
         attention_inputs = decoder_ouputs
         for i in range(self.num_attention_layer):
-            value, attention_weights = self.mha_with_residual.forward(attention_inputs)
+
+            value, attention_weights = self.mha_with_residual.forward(attention_inputs,b=b)
             attention_inputs = value 
 
             ##### -------- adding the batch norm to make sure the gradient is under control ------ #### 
@@ -438,7 +446,7 @@ class proportion_model(nn.Module):
         return crps
 
 def train_model(
-    model :proportion_model, 
+    model:ProportionModel,  
     input_tensor: torch.tensor, 
     target_tensor: torch.tensor, 
     n_epochs :int, 
@@ -533,7 +541,7 @@ def train_model(
                     target = target_batch[batch_index, :, :, :] 
                     #print(input.shape)
 
-                    output, decoder_ouputs, value = model.forward(input)
+                    output, decoder_ouputs, value = model.forward(input,b=b)
                     decoder_batch_ouputs[batch_index] = decoder_ouputs 
                     attention_batch_outputs[batch_index] = value
                     model_batch_outputs[batch_index] = output 
@@ -578,8 +586,8 @@ def train_model(
                         (batch_losses),
                         label = 'train'
                     )
-                    plt.grid()
                     plt.ylabel('Loss')
+                    plt.grid()
 
                     plt.subplot(212)
                     plt.plot(
@@ -587,8 +595,8 @@ def train_model(
                         (crpss),
                         label = 'valid',
                     )
-                    plt.grid()
                     plt.ylabel('crps')
+                    plt.grid()
                     
                 if b%20 == 0 and b!= 0: 
                 #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
