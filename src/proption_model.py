@@ -30,7 +30,18 @@ class Dirichlet_exp(object):
         return self._coef * np.multiply.reduce([xx ** (aa - 1)
                                                for (xx, aa)in zip(x, self._alpha)])
 
-def get_loss(output:torch.tensor, target:torch.tensor, epsilon:float, threshold: float = None):
+def get_loss(
+    output:torch.tensor, 
+    target:torch.tensor, 
+    epsilon:float = 1e-08, 
+    threshold: float = 1e-08, 
+    complex_modification : bool = True
+    ) -> torch.tensor:
+
+    """
+    if complex_modification is False, the epsilon is forced to be 1e-08
+    for numerical stability 
+    """
 
     drichilet = Dirichlet(concentration=output)
     # output 
@@ -42,19 +53,38 @@ def get_loss(output:torch.tensor, target:torch.tensor, epsilon:float, threshold:
     # print(target.shape) 
     # print(target)
     
-    # row_indexs = (target >= threshold).nonzero()[:,0]
-    # col_indexs = (target >= threshold).nonzero()[:,1]
+    # scan greater values 
+    row_indexs = (target >= 1-threshold).nonzero()[:,0]
+    col_indexs = (target >= 1-threshold).nonzero()[:,1]
 
-    # for i in range(len(row_indexs)): 
-    #     target[row_indexs[i],col_indexs[i]] -= epsilon
+    if complex_modification:
 
-    #     target[row_indexs[i],0:col_indexs[i]] += epsilon/2
-    #     target[row_indexs[i],col_indexs[i]+1:] += epsilon/2
+        for i in range(len(row_indexs)): 
+            target[row_indexs[i],col_indexs[i]] -= epsilon
+
+            target[row_indexs[i],0:col_indexs[i]] += epsilon/2
+            target[row_indexs[i],col_indexs[i]+1:] += epsilon/2
+        # print(target)
+        
+        # scan smaller values 
+        row_indexs = (target <= threshold).nonzero()[:,0]
+        col_indexs = (target <= threshold).nonzero()[:,1]
+
+        for i in range(len(row_indexs)): 
+            target[row_indexs[i],col_indexs[i]] += epsilon
+
+            target[row_indexs[i],0:col_indexs[i]] -= epsilon/2
+            target[row_indexs[i],col_indexs[i]+1:] -= epsilon/2
+
+    else: 
+        epsilon = 1e-08
+        target += epsilon
     
     # print(target)
+    # print(target.shape)
+    # print(output.shape)
     # print(target.sum(dim=1))
-
-    loss = drichilet.log_prob(target+epsilon)
+    loss = drichilet.log_prob(target)
     loss_sum = loss.sum(-1)
 
     return -loss_sum
@@ -459,7 +489,8 @@ def train_model(
     val_input_tensor : torch.tensor = None,
     val_target_tensor: torch.tensor = None, 
     epsilon: float = 1e-05,
-    threshold: float = 0.95
+    threshold: float = 0.95,
+    complex_modification : bool = True,
     ):
     """
     All implementation is based on Batch = False
@@ -551,7 +582,13 @@ def train_model(
                     target = torch.squeeze(target, dim=-1)
                     target = torch.permute(target, (1,0))
 
-                    loss = get_loss(output, target, epsilon, threshold=threshold)
+                    loss = get_loss(
+                        output, 
+                        target, 
+                        epsilon = epsilon, 
+                        threshold=threshold,
+                        complex_modification = complex_modification
+                    )
 
                     # reduction method defulat to sum, instead of mean 
                     batch_loss += loss
