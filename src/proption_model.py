@@ -288,7 +288,7 @@ class mha_with_residual(nn.Module):
         self.linear = Linear(self.mha_output_dim, self.mha_output_dim)
         self.batch_norm_layer = nn.BatchNorm1d(self.mha_embedd_dim)
 
-    def forward(self, x:torch.tensor, b=None):
+    def forward(self, x:torch.tensor,):
 
         values, atten_wieghts = self.mha(x, x, x)
         values = self.linear(values)
@@ -299,9 +299,9 @@ class mha_with_residual(nn.Module):
         #     print(values.shape)
         #     print(values)
         values = self.batch_norm_layer(values.permute(0,2,1))
-        if b == 439:
-            print(values.shape)
-            print(values)
+        # if b == 439:
+        #     print(values.shape)
+        #     print(values)
         values = values.permute(0,2,1) 
 
         return values, atten_wieghts
@@ -397,7 +397,6 @@ class ProportionModel(nn.Module):
     def forward(
         self,
         input :torch.tensor,
-        b: int = None,
     ): 
         """
         implement the forward propogation for each single observation 
@@ -452,7 +451,7 @@ class ProportionModel(nn.Module):
         attention_inputs = decoder_ouputs
         for i in range(self.num_attention_layer):
 
-            value, attention_weights = self.mha_with_residual.forward(attention_inputs,b=b)
+            value, attention_weights = self.mha_with_residual.forward(attention_inputs)
             attention_inputs = value 
 
             ##### -------- adding the batch norm to make sure the gradient is under control ------ #### 
@@ -572,7 +571,7 @@ def train_model(
                     target = target_batch[batch_index, :, :, :] 
                     #print(input.shape)
 
-                    output, decoder_ouputs, value = model.forward(input,b=b)
+                    output, decoder_ouputs, value = model.forward(input)
                     decoder_batch_ouputs[batch_index] = decoder_ouputs 
                     attention_batch_outputs[batch_index] = value
                     model_batch_outputs[batch_index] = output 
