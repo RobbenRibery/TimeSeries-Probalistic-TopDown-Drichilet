@@ -176,7 +176,7 @@ class encoder_lstm(nn.Module):
             torch.randn(1 * self.lstm_num_layer, batch_size, self.lstm_hidden_dim),
         )
 
-    def forward(self, x, ):
+    def forward(self, x):
 
         """
         : param x :                    input of shape (# in batch, seq_len, lstm_input_dim)
@@ -187,7 +187,7 @@ class encoder_lstm(nn.Module):
         :                              element in the sequence
         """
 
-        encoder_ouptut, endoer_hidden_output = self.lstm(x,)
+        encoder_ouptut, endoer_hidden_output = self.lstm(x)
 
         return encoder_ouptut, endoer_hidden_output
 
