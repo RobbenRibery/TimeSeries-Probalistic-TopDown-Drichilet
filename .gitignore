@@ -1,3 +1,6 @@
 *.csv
 data/
 .venv/
+
+.pt
+.png

@@ -33,27 +33,23 @@ class Dirichlet_exp(object):
 def get_loss(
     output:torch.tensor, 
     target:torch.tensor, 
-    epsilon:float = 1e-08, 
+    epsilon:float = 1e-02, 
     threshold: float = 1e-08, 
     complex_modification : bool = True
     ) -> torch.tensor:
 
-    """
-    if complex_modification is False, the epsilon is forced to be 1e-08
-    for numerical stability 
-    """
+    """ Compute the negative log-likeihood for all observations on forecasting horizon 
 
+    - if complex_modification is False, the epsilon is forced to be 1e-08
+    for numerical stability, and this modification is applied universally 
+
+    - if complex_modification is True, we scan the target tensor, if there are anmoloy 
+    points found (hit the threshold), we provide a self-coherent modification based on 
+    epsilon
+
+    """
     drichilet = Dirichlet(concentration=output)
-    # output 
-    # print(f"the batch shape is {output.shape[:-1]}")
-    # print(f"the event shape is {output.shape[-1:]}")
-    # print(drichilet)
 
-    # target += epsilon
-    # print(target.shape) 
-    # print(target)
-    
-    # scan greater values 
     row_indexs = (target >= 1-threshold).nonzero()[:,0]
     col_indexs = (target >= 1-threshold).nonzero()[:,1]
 
@@ -64,9 +60,7 @@ def get_loss(
 
             target[row_indexs[i],0:col_indexs[i]] += epsilon/2
             target[row_indexs[i],col_indexs[i]+1:] += epsilon/2
-        # print(target)
-        
-        # scan smaller values 
+
         row_indexs = (target <= threshold).nonzero()[:,0]
         col_indexs = (target <= threshold).nonzero()[:,1]
 
@@ -75,15 +69,10 @@ def get_loss(
 
             target[row_indexs[i],0:col_indexs[i]] -= epsilon/2
             target[row_indexs[i],col_indexs[i]+1:] -= epsilon/2
-
     else: 
         epsilon = 1e-08
         target += epsilon
-    
-    # print(target)
-    # print(target.shape)
-    # print(output.shape)
-    # print(target.sum(dim=1))
+
     loss = drichilet.log_prob(target)
     loss_sum = loss.sum(-1)
 
@@ -231,7 +220,7 @@ class decoder_lstm(nn.Module):
     def forward(self, x, endoer_hidden_output):
 
         """
-
+    
         x: input at the last timestamp  input of shape should 2D (batch_size, input_size)
 
         encoder_output: cache of the encoder output
@@ -273,7 +262,7 @@ class mha_with_residual(nn.Module):
 
         assert (
             mha_embedd_dim % num_head == 0
-        )  # Embedding dimension must be 0 modulo number of heads
+        )  # Embedding dimension must be 0 module number of heads
 
         self.mha_embedd_dim = mha_embedd_dim
         self.num_head = num_head
@@ -287,21 +276,26 @@ class mha_with_residual(nn.Module):
         )
         self.linear = Linear(self.mha_output_dim, self.mha_output_dim)
         self.batch_norm_layer = nn.BatchNorm1d(self.mha_embedd_dim)
+        #self.layer_norm_layer = nn.LayerNorm(self.mha_embedd_dim)
 
     def forward(self, x:torch.tensor,):
 
+        """forward prop for one Multi-headed Attention layer
+
+        Returns:
+            x: (torhch.tensor) Dimension: (
+                F : -> forecasting horizon 
+                C : -> number of child in this family 
+                Dim: -> ouptut dimension of the MHA/LSTM 
+                    accroding to the paper is 64 for M5 
+            )
+        """
+        # BATCH FIRST  = TRUE for MHA 
         values, atten_wieghts = self.mha(x, x, x)
         values = self.linear(values)
         values = values + x
         values = self.activation(values)
-        #print(values)
-        # if b == 439:
-        #     print(values.shape)
-        #     print(values)
         values = self.batch_norm_layer(values.permute(0,2,1))
-        # if b == 439:
-        #     print(values.shape)
-        #     print(values)
         values = values.permute(0,2,1) 
 
         return values, atten_wieghts
