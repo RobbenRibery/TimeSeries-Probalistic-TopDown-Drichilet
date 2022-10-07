@@ -1,4 +1,5 @@
 from cProfile import label
+from sched import scheduler
 from typing import List
 from unicodedata import name
 from torch.nn import LSTM, MultiheadAttention, Linear
@@ -495,6 +496,7 @@ def train_model(
         F: future data points
     """
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, )
 
     # try: 
     #     checkpoint = torch.load(PATH) 
