@@ -317,7 +317,7 @@ class output(nn.Module):
     def forward(self, x):
 
         output = self.linear(x)
-        output = torch.exp(output)
+        output = torch.abs(output)
         #output = torch.clamp(output, max=50)
 
         return output
@@ -618,6 +618,7 @@ def train_model(
                 #model.train()
                 #crpss.append(crps)
 
+
                 "---- Tracing  ----"
                 if tracing:
 
@@ -630,6 +631,23 @@ def train_model(
                     )
                     plt.ylabel('Loss')
                     plt.grid()
+                    
+                    plt.figure(2, figsize=(10,5))
+                    ave_grads = []
+                    layers = []
+                    for n, p in model.named_parameters():
+                        if(p.requires_grad) and ("bias" not in n):
+                            layers.append(n)
+                            ave_grads.append(p.grad.abs().mean())
+                    
+                    plt.plot(ave_grads, alpha=0.3, color="b")
+                    plt.hlines(0, 0, len(ave_grads)+1, linewidth=1, color="k" )
+                    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+                    plt.xlim(xmin=0, xmax=len(ave_grads))
+                    plt.xlabel("Layers")
+                    plt.ylabel("average gradient")
+                    plt.title("Gradient flow")
+                    plt.grid(True)
 
                     # plt.subplot(212)
                     # plt.plot(
@@ -645,9 +663,7 @@ def train_model(
                     "---- Saving ----- "
                     plt.show()
 
-
-                    plot_grad_flow(model.named_parameters())
-
+            
                     # torch.save(
                     #     {   'lr' : learning_rate,
                     #         'epoch': it,
