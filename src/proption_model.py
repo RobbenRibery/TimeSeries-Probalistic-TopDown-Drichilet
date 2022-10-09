@@ -18,6 +18,8 @@ import matplotlib.pyplot as plt
 
 torch.autograd.set_detect_anomaly(True)
 
+from plot_utils import plot_grad_flow
+
 class Dirichlet_exp(object):
     def __init__(self, alpha):
         from math import gamma
@@ -75,7 +77,8 @@ def get_loss(
         target += epsilon
 
     loss = drichilet.log_prob(target)
-    loss_sum = loss.sum(-1)
+    #print(loss)
+    loss_sum = loss.sum()
 
     return -loss_sum
 
@@ -296,6 +299,7 @@ class mha_with_residual(nn.Module):
         values = self.linear(values)
         values = values + x
         values = self.activation(values)
+        #values = self.layer_norm_layer(values)
         values = self.batch_norm_layer(values.permute(0,2,1))
         values = values.permute(0,2,1) 
 
@@ -454,13 +458,15 @@ class ProportionModel(nn.Module):
         # forward prop - linear output 
         output = self.output(value)  # L, C, 1
 
+        # collapse the last dimension 
+        output = torch.squeeze(output, dim=-1) 
+
         return output, decoder_ouputs, value 
 
     def evaluate_distribution_crps(self, input: torch.tensor, target: torch.tensor, n_samples:int = 200) -> float: 
 
         self.eval()
         output, _, _  = self.forward(input=input)
-        output = torch.squeeze(output, dim=-1) 
         target = torch.squeeze(target, dim=-1)
         target = torch.permute(target, (1,0))
         
@@ -468,6 +474,7 @@ class ProportionModel(nn.Module):
         samples = predictive_distribution.sample([n_samples])
         crps = eval_crps(samples, target)
         return crps
+
 
 def train_model(
     model:ProportionModel,  
@@ -496,7 +503,10 @@ def train_model(
         F: future data points
     """
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, )
+    # scheduler = optim.lr_scheduler.ExponentialLR(
+    #     optimizer=optimizer,
+    #     gamma=0.5,
+    # )
 
     # try: 
     #     checkpoint = torch.load(PATH) 
@@ -530,16 +540,16 @@ def train_model(
 
     with trange(iter_start, n_epochs) as tr:
         iter_losses = []
-        for it in tr:
+        for epoch in tr:
 
             batch_losses = []
             crpss = []
 
-            print(f'Trainign for Iteration: {it} starts')
+            print(f'Trainign for Iteration: {epoch} starts')
             
             for b in range(batch_start, n_batches):
 
-                print(f'Training for Iteration: {it} Batch {b} starts')
+                print(f'Training for Iteration: {epoch} Batch {b} starts')
 
                 #print(f'Iteration: {it} - Batch: {b}')
                 no_child = input_tensor.shape[-3]
@@ -559,6 +569,7 @@ def train_model(
                 batch_loss = 0.
                 batch_loss_no_grad = 0.
                 "---- ZERO GRAD ----"
+                model.zero_grad()
                 optimizer.zero_grad()
                 # pass in each observation for forward propogation
                 for batch_index in range(input_batch.shape[0]):
@@ -570,10 +581,7 @@ def train_model(
                     output, decoder_ouputs, value = model.forward(input)
                     decoder_batch_ouputs[batch_index] = decoder_ouputs 
                     attention_batch_outputs[batch_index] = value
-                    model_batch_outputs[batch_index] = output 
-
-
-                    output = torch.squeeze(output, dim=-1)
+                    model_batch_outputs[batch_index] = output.unsqueeze(dim=-1)
                     target = torch.squeeze(target, dim=-1)
                     target = torch.permute(target, (1,0))
 
@@ -590,23 +598,25 @@ def train_model(
                     batch_loss_no_grad += loss.item()
 
                 "---- BackProp ----"
-                average_batch_loss = batch_loss/batch_size
-                average_batch_loss.backward() 
+                #average_batch_loss = batch_loss/batch_size
+                #average_batch_loss.backward() 
+                batch_loss.backward()
                 if clip: 
-                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=2, norm_type=2)
+                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5, norm_type=2)
                 optimizer.step()
 
-                average_batch_loss_no_grad = batch_loss_no_grad/batch_size
-                if average_batch_loss_no_grad >= 20: 
-                    print(f'Loss exploded to {average_batch_loss_no_grad} at {b+1}')
-                    average_batch_loss_no_grad = 20
-                batch_losses.append(average_batch_loss_no_grad) 
+                #average_batch_loss_no_grad = batch_loss_no_grad/batch_size
+                if batch_loss_no_grad >= 20: 
+                    print(f'Loss exploded to {batch_loss_no_grad} at {b+1}')
+                    batch_loss_no_grad = 20
+
+                batch_losses.append(batch_loss_no_grad) 
 
                 "---- EVAL ----"
                 ### doing eval might destroy the model 
-                crps = model.evaluate_distribution_crps(val_input_tensor, val_target_tensor, n_samples=100)
-                crpss.append(crps)
-                model.train()
+                #crps = model.evaluate_distribution_crps(val_input_tensor, val_target_tensor, n_samples=100)
+                #model.train()
+                #crpss.append(crps)
 
                 "---- Tracing  ----"
                 if tracing:
@@ -621,19 +631,22 @@ def train_model(
                     plt.ylabel('Loss')
                     plt.grid()
 
-                    plt.subplot(212)
-                    plt.plot(
-                        list(range(1,b+2)),
-                        (crpss),
-                        label = 'valid',
-                    )
-                    plt.ylabel('crps')
-                    plt.grid()
+                    # plt.subplot(212)
+                    # plt.plot(
+                    #     list(range(1,b+2)),
+                    #     (crpss),
+                    #     label = 'valid',
+                    # )
+                    # plt.ylabel('crps')
+                    # plt.grid()
                     
                 if b%20 == 0 and b!= 0: 
                 #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
                     "---- Saving ----- "
                     plt.show()
+
+
+                    plot_grad_flow(model.named_parameters())
 
                     # torch.save(
                     #     {   'lr' : learning_rate,
@@ -649,10 +662,11 @@ def train_model(
 
             #print(f"Training for iteration {it} is completed")
             iter_loss = sum(batch_losses)/n_batches 
+            # learning rate decay
+            #scheduler.step()
             #print(f"The average loss for iteration {it} is {iter_loss}")
+            iter_losses.append(iter_loss)
             tr.set_postfix(loss="{0:.3f}".format(iter_loss))
-
-        iter_losses.append(iter_loss)
     
     return model, iter_losses
 
