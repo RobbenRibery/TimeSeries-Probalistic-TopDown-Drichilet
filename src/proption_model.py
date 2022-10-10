@@ -613,10 +613,10 @@ def train_model(
                 batch_losses.append(batch_loss_no_grad) 
 
                 "---- EVAL ----"
-                ### doing eval might destroy the model 
-                #crps = model.evaluate_distribution_crps(val_input_tensor, val_target_tensor, n_samples=100)
-                #model.train()
-                #crpss.append(crps)
+                ## doing eval might destroy the model 
+                crps = model.evaluate_distribution_crps(val_input_tensor, val_target_tensor, n_samples=100)
+                model.train()
+                crpss.append(crps)
 
 
                 "---- Tracing  ----"
@@ -649,20 +649,19 @@ def train_model(
                     plt.title("Gradient flow")
                     plt.grid(True)
 
-                    # plt.subplot(212)
-                    # plt.plot(
-                    #     list(range(1,b+2)),
-                    #     (crpss),
-                    #     label = 'valid',
-                    # )
-                    # plt.ylabel('crps')
-                    # plt.grid()
+                    plt.figure(3, figsize=(10,5))
+                    plt.plot(
+                        list(range(1,b+2)),
+                        (crpss),
+                        label = 'valid',
+                    )
+                    plt.ylabel('crps')
+                    plt.grid()
                     
                 if b%20 == 0 and b!= 0: 
                 #   print(f"The loss for iteration {it} batch {b} is {batch_loss_no_grad/batch_size}")
                     "---- Saving ----- "
                     plt.show()
-
             
                     # torch.save(
                     #     {   'lr' : learning_rate,
@@ -680,7 +679,7 @@ def train_model(
             iter_loss = sum(batch_losses)/n_batches 
             # learning rate decay
             #scheduler.step()
-            #print(f"The average loss for iteration {it} is {iter_loss}")
+            #print(f"The total loss for iteration {it} is {iter_loss}")
             iter_losses.append(iter_loss)
             tr.set_postfix(loss="{0:.3f}".format(iter_loss))
     
