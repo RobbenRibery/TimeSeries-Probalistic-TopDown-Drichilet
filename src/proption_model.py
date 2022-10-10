@@ -131,7 +131,7 @@ class encoder_lstm(nn.Module):
     """Encodes time-series sequence"""
 
     def __init__(
-        self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, batch_first=False
+        self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, batch_first=False,
     ) -> None:
 
         super(encoder_lstm, self).__init__()
@@ -154,19 +154,6 @@ class encoder_lstm(nn.Module):
             self.lstm_hidden_dim,
             self.lstm_num_layer,
             batch_first=self.batch_first,
-        )
-
-    def init_hidden(self, batch_size):
-
-        """
-        initialize hidden state
-        : param batch_size:    x_input.shape[1]
-        : return:              zeroed hidden state and cell state
-        """
-
-        return (
-            torch.randn(1 * self.lstm_num_layer, batch_size, self.lstm_hidden_dim),
-            torch.randn(1 * self.lstm_num_layer, batch_size, self.lstm_hidden_dim),
         )
 
     def forward(self, x):
