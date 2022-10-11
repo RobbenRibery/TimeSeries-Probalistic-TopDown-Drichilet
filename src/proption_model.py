@@ -1,4 +1,6 @@
 from cProfile import label
+from itertools import dropwhile
+from pickle import TRUE
 from sched import scheduler
 from typing import List
 from unicodedata import name
@@ -131,7 +133,12 @@ class encoder_lstm(nn.Module):
     """Encodes time-series sequence"""
 
     def __init__(
-        self, lstm_input_dim, lstm_hidden_dim, lstm_num_layer, batch_first=False,
+        self, 
+        ts_embedding_dim, 
+        lstm_input_dim, 
+        lstm_hidden_dim, 
+        lstm_num_layer, 
+        batch_first=True, 
     ) -> None:
 
         super(encoder_lstm, self).__init__()
@@ -144,17 +151,23 @@ class encoder_lstm(nn.Module):
         : batch_first:          True --> first input would be the number of sequences/observations
         """
 
+        self.ts_embedding_dim = ts_embedding_dim
         self.lstm_input_dim = lstm_input_dim
         self.lstm_hidden_dim = lstm_hidden_dim
         self.lstm_num_layer = lstm_num_layer
         self.batch_first = batch_first
+        #self.dropout = dropout
+        self.linear = Linear(ts_embedding_dim, self.lstm_input_dim)
 
         self.lstm = LSTM(
             self.lstm_input_dim,
             self.lstm_hidden_dim,
             self.lstm_num_layer,
             batch_first=self.batch_first,
+            #dropout = dropout,
         )
+
+        #self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
 
@@ -167,7 +180,8 @@ class encoder_lstm(nn.Module):
         :                              element in the sequence
         """
 
-        encoder_ouptut, endoer_hidden_output = self.lstm(x)
+        lstm_input = F.relu(self.linear(x))
+        encoder_ouptut, endoer_hidden_output = self.lstm(lstm_input)
 
         return encoder_ouptut, endoer_hidden_output
 
@@ -182,7 +196,7 @@ class decoder_lstm(nn.Module):
         lstm_hidden_dim,
         lstm_num_layer,
         lstm_ouptut_dim,
-        batch_first=False,
+        batch_first=True,
     ) -> None:
         super(decoder_lstm, self).__init__()
 
@@ -235,7 +249,7 @@ class decoder_lstm(nn.Module):
         #     decoder_lstm_output = decoder_lstm_output.squeeze(1)
         # else:
         #     decoder_lstm_output = decoder_lstm_output.squeeze(0)
-        layer_output = self.linear_2(decoder_output)
+        layer_output = F.relu(self.linear_2(decoder_output))
 
         return layer_output, decoder_output, decodoer_hidden_output
 
@@ -327,6 +341,7 @@ class ProportionModel(nn.Module):
         residual_output_dim,  # skip connection hyper pars
         model_ouput_dim,  # output later hyper pars
         mha_activation = nn.ReLU(),
+        covariate_dim = 0,
     ) -> None:
         super(ProportionModel, self).__init__()
 
@@ -339,6 +354,8 @@ class ProportionModel(nn.Module):
         """
 
         assert model_ouput_dim == 1
+        self.covariate_dim = covariate_dim
+
         self.num_hts_embedd = num_hts_embedd
         self.hts_embedd_dim = hts_embedd_dim
 
@@ -357,6 +374,7 @@ class ProportionModel(nn.Module):
         self.batch_norm_layer = batch_norm(self.lstm_input_dim)
         self.embedd_layer = hts_embedding(self.num_hts_embedd, self.hts_embedd_dim)
         self.encoder_lstm = encoder_lstm(
+            self.hts_embedd_dim + self.covariate_dim + 2,
             self.lstm_input_dim,
             self.lstm_hidden_dim,
             self.lstm_num_layer,
@@ -529,7 +547,7 @@ def train_model(
         iter_losses = []
         for epoch in tr:
 
-            batch_losses = []
+            average_batch_losses = []
             crpss = []
 
             print(f'Trainign for Iteration: {epoch} starts')
@@ -548,6 +566,8 @@ def train_model(
                 else: 
                     input_batch = input_tensor[b*batch_size:]
                     target_batch = target_tensor[b*batch_size:]
+                    print(input_batch.shape)
+                    print(target_batch.shape)
 
                 decoder_batch_ouputs = zeros(input_batch.shape[0], target_len, no_child, model.lstm_output_dim,)
                 attention_batch_outputs = zeros(input_batch.shape[0], target_len, no_child, model.mha_output_dim,)
@@ -580,24 +600,31 @@ def train_model(
                         complex_modification = complex_modification
                     )
 
+                    if b == 469: 
+                        print(loss)
+                        print(output)
+                        print(target)
+
                     # reduction method defulat to sum, instead of mean 
                     batch_loss += loss
                     batch_loss_no_grad += loss.item()
 
                 "---- BackProp ----"
-                #average_batch_loss = batch_loss/batch_size
-                #average_batch_loss.backward() 
-                batch_loss.backward()
+                if  b == 469: 
+                    print(batch_loss)
+                average_batch_loss = batch_loss/input_batch.shape[0]
+                average_batch_loss.backward() 
+                #batch_loss.backward()
                 if clip: 
                     nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5, norm_type=2)
                 optimizer.step()
 
-                #average_batch_loss_no_grad = batch_loss_no_grad/batch_size
-                if batch_loss_no_grad >= 20: 
-                    print(f'Loss exploded to {batch_loss_no_grad} at {b+1}')
-                    batch_loss_no_grad = 20
+                average_batch_loss_no_grad = batch_loss_no_grad/input_batch.shape[0]
+                if average_batch_loss_no_grad >= 0: 
+                    print(f'Loss exploded to {average_batch_loss_no_grad} at {b+1}')
+                    average_batch_loss_no_grad = 0
 
-                batch_losses.append(batch_loss_no_grad) 
+                average_batch_losses.append(average_batch_loss_no_grad) 
 
                 "---- EVAL ----"
                 ## doing eval might destroy the model 
@@ -613,7 +640,7 @@ def train_model(
                     plt.subplot(211)
                     plt.plot(
                         list(range(1,b+2)),
-                        (batch_losses),
+                        (average_batch_losses),
                         label = 'train'
                     )
                     plt.ylabel('Loss')
@@ -663,7 +690,7 @@ def train_model(
                 "--- Validation ---- "
 
             #print(f"Training for iteration {it} is completed")
-            iter_loss = sum(batch_losses)/n_batches 
+            iter_loss = sum(average_batch_losses)/n_batches 
             # learning rate decay
             #scheduler.step()
             #print(f"The total loss for iteration {it} is {iter_loss}")
